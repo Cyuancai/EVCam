@@ -137,6 +137,26 @@ public class MainActivity extends AppCompatActivity {
             startDingTalkService();
         }
 
+        // 启动定时保活任务（如果用户启用了）
+        AppConfig appConfig = new AppConfig(this);
+        if (appConfig.isKeepAliveEnabled()) {
+            KeepAliveManager.startKeepAliveWork(this);
+            AppLog.d(TAG, "定时保活任务已启动");
+        } else {
+            AppLog.d(TAG, "定时保活任务已禁用，跳过启动");
+        }
+
+        // 检查是否是开机自启动
+        boolean autoStartFromBoot = getIntent().getBooleanExtra("auto_start_from_boot", false);
+        if (autoStartFromBoot) {
+            AppLog.d(TAG, "开机自启动模式：延迟5秒后自动移到后台");
+            // 延迟5秒后自动移到后台，避免用户看到闪现的界面
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                moveTaskToBack(true);
+                AppLog.d(TAG, "开机自启动：已自动移到后台");
+            }, 5000);
+        }
+
         // 检查是否有启动时传入的远程命令（冷启动）
         handleRemoteCommandFromIntent(getIntent());
     }
@@ -166,6 +186,10 @@ public class MainActivity extends AppCompatActivity {
         }
 
         AppLog.d(TAG, "Received remote command from intent: " + action);
+
+        // 先切换到主界面（录制界面），确保显示正确的界面
+        showRecordingInterface();
+        AppLog.d(TAG, "Switched to recording interface");
 
         // 提取参数
         String conversationId = intent.getStringExtra("remote_conversation_id");
@@ -1378,7 +1402,10 @@ public class MainActivity extends AppCompatActivity {
         if (drawerLayout.isDrawerOpen(GravityCompat.START)) {
             drawerLayout.closeDrawer(GravityCompat.START);
         } else {
-            super.onBackPressed();
+            // 按返回键时将应用移到后台，而不是关闭Activity
+            // 这样下次打开应用时能快速恢复，无需重新创建Activity
+            moveTaskToBack(true);
+            AppLog.d(TAG, "Moved to background via back button");
         }
     }
 }

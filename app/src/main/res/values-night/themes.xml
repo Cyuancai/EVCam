@@ -13,6 +13,11 @@
         <item name="colorOnSurface">#FFFFFF</item>
         <item name="android:statusBarColor">#2A2A2A</item>
         <item name="android:navigationBarColor">#000000</item>
+        <!-- 启动画面背景颜色（夜间模式使用夜间背景色） -->
+        <item name="android:windowBackground">@color/page_background</item>
+        <!-- Android 12+ 启动画面背景 -->
+        <item name="android:windowSplashScreenBackground">@color/page_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
     </style>
 
     <!-- 导航菜单项文字样式 -->
