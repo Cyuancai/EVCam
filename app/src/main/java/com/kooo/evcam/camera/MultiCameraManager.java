@@ -3,6 +3,7 @@ package com.kooo.evcam.camera;
 
 import com.kooo.evcam.AppConfig;
 import com.kooo.evcam.AppLog;
+import com.kooo.evcam.FileTransferManager;
 import com.kooo.evcam.StorageHelper;
 import android.content.Context;
 import android.os.Environment;
@@ -39,6 +40,8 @@ public class MultiCameraManager {
 
     private boolean isRecording = false;
     private boolean useCodecRecording = false;  // 是否使用软编码录制（用于 L6/L7）
+    private boolean useRelayWrite = false;      // 是否使用中转写入（录制到内部存储，异步传输到U盘）
+    private File finalSaveDir = null;           // 最终存储目录（用于中转写入模式）
     private StatusCallback statusCallback;
     private PreviewSizeCallback previewSizeCallback;
     private volatile int sessionConfiguredCount = 0;
@@ -363,6 +366,13 @@ public class MultiCameraManager {
                         VideoRecorder recorder = recorders.get(key);
 
                         if (camera != null && recorder != null) {
+                            // 如果使用中转写入，将上一个分段的文件传输到最终目录
+                            if (useRelayWrite && finalSaveDir != null && newSegmentIndex > 0) {
+                                // 获取上一个分段的文件路径（注意：VideoRecorder 内部已经切换到新路径）
+                                // 通过文件名模式查找临时目录中的文件
+                                scheduleRelayTransfer(key);
+                            }
+                            
                             // 更新录制 Surface 并重新创建会话
                             camera.setRecordSurface(recorder.getSurface());
                             camera.recreateSession();
@@ -505,9 +515,26 @@ public class MultiCameraManager {
     private boolean startMediaRecorderRecording(String timestamp, Set<String> enabledCameras) {
         AppLog.d(TAG, "Starting MediaRecorder recording with timestamp: " + timestamp);
 
-        File saveDir = StorageHelper.getVideoDir(context);
+        // 检查是否使用中转写入模式
+        AppConfig appConfig = new AppConfig(context);
+        useRelayWrite = appConfig.shouldUseRelayWrite();
+        
+        // 获取录制目录（可能是临时目录或最终目录）
+        File saveDir = StorageHelper.getRecordingDir(context);
         if (!saveDir.exists()) {
             saveDir.mkdirs();
+        }
+        
+        // 如果使用中转写入，记录最终目录
+        if (useRelayWrite) {
+            finalSaveDir = StorageHelper.getFinalVideoDir(context);
+            if (!finalSaveDir.exists()) {
+                finalSaveDir.mkdirs();
+            }
+            AppLog.d(TAG, "Relay write mode: recording to " + saveDir.getAbsolutePath() + 
+                    ", will transfer to " + finalSaveDir.getAbsolutePath());
+        } else {
+            finalSaveDir = null;
         }
 
         List<String> allKeys = getActiveCameraKeys();
@@ -536,8 +563,7 @@ public class MultiCameraManager {
             return false;
         }
 
-        // 获取录制配置
-        AppConfig appConfig = new AppConfig(context);
+        // 获取录制配置（使用上面已创建的 appConfig）
         long segmentDurationMs = appConfig.getSegmentDurationMs();
         AppLog.d(TAG, "Segment duration: " + (segmentDurationMs / 1000) + " seconds (" + appConfig.getSegmentDurationMinutes() + " minutes)");
         
@@ -676,9 +702,26 @@ public class MultiCameraManager {
     private boolean startCodecRecording(String timestamp, Set<String> enabledCameras) {
         AppLog.d(TAG, "Starting CODEC recording with timestamp: " + timestamp);
 
-        File saveDir = StorageHelper.getVideoDir(context);
+        // 检查是否使用中转写入模式
+        AppConfig appConfig = new AppConfig(context);
+        useRelayWrite = appConfig.shouldUseRelayWrite();
+        
+        // 获取录制目录（可能是临时目录或最终目录）
+        File saveDir = StorageHelper.getRecordingDir(context);
         if (!saveDir.exists()) {
             saveDir.mkdirs();
+        }
+        
+        // 如果使用中转写入，记录最终目录
+        if (useRelayWrite) {
+            finalSaveDir = StorageHelper.getFinalVideoDir(context);
+            if (!finalSaveDir.exists()) {
+                finalSaveDir.mkdirs();
+            }
+            AppLog.d(TAG, "Codec relay write mode: recording to " + saveDir.getAbsolutePath() + 
+                    ", will transfer to " + finalSaveDir.getAbsolutePath());
+        } else {
+            finalSaveDir = null;
         }
 
         List<String> allKeys = getActiveCameraKeys();
@@ -707,8 +750,7 @@ public class MultiCameraManager {
             return false;
         }
 
-        // 获取录制配置
-        AppConfig appConfig = new AppConfig(context);
+        // 获取录制配置（使用上面已创建的 appConfig）
         long segmentDurationMs = appConfig.getSegmentDurationMs();
         AppLog.d(TAG, "Codec segment duration: " + (segmentDurationMs / 1000) + " seconds (" + appConfig.getSegmentDurationMinutes() + " minutes)");
         
@@ -782,6 +824,11 @@ public class MultiCameraManager {
                 @Override
                 public void onSegmentSwitch(String cameraId, int newSegmentIndex) {
                     AppLog.d(TAG, "Codec segment switch for camera " + cameraId + " to segment " + newSegmentIndex);
+                    
+                    // 如果使用中转写入，将上一个分段的文件传输到最终目录
+                    if (useRelayWrite && finalSaveDir != null && newSegmentIndex > 0) {
+                        scheduleRelayTransfer(key);
+                    }
                     
                     // 通知分段切换回调（只通知一次，使用第一个摄像头的分段）
                     if ("front".equals(key) && segmentSwitchCallback != null) {
@@ -957,8 +1004,110 @@ public class MultiCameraManager {
             }
         }
 
+        // 如果使用中转写入，将临时目录中的所有文件传输到最终目录
+        if (useRelayWrite && finalSaveDir != null) {
+            AppLog.d(TAG, "Scheduling relay transfer for remaining files...");
+            // 保存引用，因为 finalSaveDir 会在延迟执行前被清空
+            final File savedFinalDir = finalSaveDir;
+            // 延迟一点执行，确保文件已经写入完成
+            mainHandler.postDelayed(() -> {
+                transferAllTempFiles(savedFinalDir);
+            }, 500);
+        }
+
         isRecording = false;
+        useRelayWrite = false;
+        finalSaveDir = null;
         AppLog.d(TAG, "All cameras stopped recording");
+    }
+    
+    /**
+     * 调度将指定摄像头的临时文件传输到最终目录
+     * @param cameraKey 摄像头位置（front/back/left/right）
+     */
+    private void scheduleRelayTransfer(String cameraKey) {
+        if (finalSaveDir == null) {
+            return;
+        }
+        
+        File tempDir = StorageHelper.getRecordingDir(context);
+        if (tempDir == null || !tempDir.exists()) {
+            return;
+        }
+        
+        // 查找该摄像头的临时文件（文件名包含 _cameraKey.mp4）
+        File[] files = tempDir.listFiles((dir, name) -> 
+                name.endsWith("_" + cameraKey + ".mp4"));
+        
+        if (files == null || files.length == 0) {
+            return;
+        }
+        
+        FileTransferManager transferManager = FileTransferManager.getInstance(context);
+        
+        for (File tempFile : files) {
+            File targetFile = new File(finalSaveDir, tempFile.getName());
+            
+            AppLog.d(TAG, "Scheduling relay transfer: " + tempFile.getName() + 
+                    " -> " + targetFile.getAbsolutePath());
+            
+            transferManager.addTransferTask(tempFile, targetFile, 
+                    new FileTransferManager.TransferCallback() {
+                @Override
+                public void onTransferComplete(File sourceFile, File targetFile) {
+                    AppLog.d(TAG, "Relay transfer complete: " + targetFile.getName());
+                }
+                
+                @Override
+                public void onTransferFailed(File sourceFile, File targetFile, String error) {
+                    AppLog.e(TAG, "Relay transfer failed: " + sourceFile.getName() + " - " + error);
+                }
+            });
+        }
+    }
+    
+    /**
+     * 将临时目录中的所有视频文件传输到最终目录
+     * @param targetDir 目标目录
+     */
+    private void transferAllTempFiles(File targetDir) {
+        if (targetDir == null) {
+            AppLog.w(TAG, "Target directory is null, skipping transfer");
+            return;
+        }
+        
+        File tempDir = new File(context.getCacheDir(), FileTransferManager.TEMP_VIDEO_DIR);
+        if (!tempDir.exists()) {
+            AppLog.d(TAG, "Temp directory does not exist");
+            return;
+        }
+        
+        File[] files = tempDir.listFiles((dir, name) -> name.endsWith(".mp4"));
+        if (files == null || files.length == 0) {
+            AppLog.d(TAG, "No temp files to transfer");
+            return;
+        }
+        
+        AppLog.d(TAG, "Transferring " + files.length + " temp file(s) to " + targetDir.getAbsolutePath());
+        
+        FileTransferManager transferManager = FileTransferManager.getInstance(context);
+        
+        for (File tempFile : files) {
+            File targetFile = new File(targetDir, tempFile.getName());
+            
+            transferManager.addTransferTask(tempFile, targetFile, 
+                    new FileTransferManager.TransferCallback() {
+                @Override
+                public void onTransferComplete(File sourceFile, File targetFile) {
+                    AppLog.d(TAG, "Transfer complete: " + targetFile.getName());
+                }
+                
+                @Override
+                public void onTransferFailed(File sourceFile, File targetFile, String error) {
+                    AppLog.e(TAG, "Transfer failed: " + sourceFile.getName() + " - " + error);
+                }
+            });
+        }
     }
 
     /**

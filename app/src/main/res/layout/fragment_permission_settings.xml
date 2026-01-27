@@ -292,7 +292,7 @@
                         android:id="@+id/tv_all_files_status"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="用于访问外置SD卡公共目录"
+                        android:text="用于访问U盘公共目录"
                         android:textColor="@color/text_secondary"
                         android:textSize="14sp"
                         android:layout_marginTop="2dp" />
@@ -412,7 +412,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="• 相机、麦克风、存储：核心功能必需权限\n\n• 通知权限：用于在后台录制时显示状态通知\n\n• 所有文件访问：仅当需要存储到外置SD卡时授予\n\n• 悬浮窗权限：用于悬浮录制按钮和后台钉钉命令唤醒\n\n• 无障碍服务：可防止应用被系统清理，但非必要"
+                android:text="• 相机、麦克风、存储：核心功能必需权限\n\n• 通知权限：用于在后台录制时显示状态通知\n\n• 所有文件访问：仅当需要存储到U盘时授予\n\n• 悬浮窗权限：用于悬浮录制按钮和后台钉钉命令唤醒\n\n• 无障碍服务：可防止应用被系统清理，但非必要"
                 android:textColor="@color/text_secondary"
                 android:textSize="14sp"
                 android:lineSpacingExtra="4dp" />

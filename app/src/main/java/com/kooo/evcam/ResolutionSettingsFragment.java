@@ -114,10 +114,6 @@ public class ResolutionSettingsFragment extends Fragment {
             }
         });
 
-        // 设置保存按钮
-        Button btnSave = view.findViewById(R.id.btn_save);
-        btnSave.setOnClickListener(v -> saveConfig());
-
         // 沉浸式状态栏兼容
         View toolbar = view.findViewById(R.id.toolbar);
         if (toolbar != null) {
@@ -298,12 +294,19 @@ public class ResolutionSettingsFragment extends Fragment {
                     return;
                 }
 
+                String newResolution;
                 if (position == 0) {
-                    selectedResolution = AppConfig.RESOLUTION_DEFAULT;
+                    newResolution = AppConfig.RESOLUTION_DEFAULT;
                     resolutionDescText.setText("默认：优先匹配 1280×800，否则选择最接近的分辨率");
                 } else {
-                    selectedResolution = resolutionOptions.get(position);
-                    resolutionDescText.setText("将优先匹配 " + selectedResolution + "，如果摄像头不支持则选择最接近的");
+                    newResolution = resolutionOptions.get(position);
+                    resolutionDescText.setText("将优先匹配 " + newResolution + "，如果摄像头不支持则选择最接近的");
+                }
+                
+                // 只在值变化时保存
+                if (!newResolution.equals(selectedResolution)) {
+                    selectedResolution = newResolution;
+                    saveResolution();
                 }
                 
                 // 更新码率描述（因为分辨率变化会影响推荐码率）
@@ -353,19 +356,32 @@ public class ResolutionSettingsFragment extends Fragment {
 
         // 设置选择监听器
         bitrateSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            private boolean isFirstSelection = true;
+            
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                String newLevel;
                 switch (position) {
                     case 0:
-                        selectedBitrateLevel = AppConfig.BITRATE_LOW;
+                        newLevel = AppConfig.BITRATE_LOW;
                         break;
                     case 2:
-                        selectedBitrateLevel = AppConfig.BITRATE_HIGH;
+                        newLevel = AppConfig.BITRATE_HIGH;
                         break;
                     default:
-                        selectedBitrateLevel = AppConfig.BITRATE_MEDIUM;
+                        newLevel = AppConfig.BITRATE_MEDIUM;
                         break;
                 }
+                
+                // 只在值变化且非首次选择时保存
+                if (!isFirstSelection && !newLevel.equals(selectedBitrateLevel)) {
+                    selectedBitrateLevel = newLevel;
+                    saveBitrate();
+                } else {
+                    selectedBitrateLevel = newLevel;
+                }
+                isFirstSelection = false;
+                
                 updateBitrateDescription();
             }
 
@@ -410,13 +426,21 @@ public class ResolutionSettingsFragment extends Fragment {
 
         // 设置选择监听器
         framerateSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            private boolean isFirstSelection = true;
+            
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (position == 1) {
-                    selectedFramerateLevel = AppConfig.FRAMERATE_LOW;
+                String newLevel = (position == 1) ? AppConfig.FRAMERATE_LOW : AppConfig.FRAMERATE_STANDARD;
+                
+                // 只在值变化且非首次选择时保存
+                if (!isFirstSelection && !newLevel.equals(selectedFramerateLevel)) {
+                    selectedFramerateLevel = newLevel;
+                    saveFramerate();
                 } else {
-                    selectedFramerateLevel = AppConfig.FRAMERATE_STANDARD;
+                    selectedFramerateLevel = newLevel;
                 }
+                isFirstSelection = false;
+                
                 updateFramerateDescription();
                 updateBitrateDescription();  // 帧率变化会影响码率计算
             }
@@ -600,43 +624,64 @@ public class ResolutionSettingsFragment extends Fragment {
     }
 
     /**
-     * 保存配置
+     * 保存分辨率设置
      */
-    private void saveConfig() {
+    private void saveResolution() {
         if (appConfig == null || getContext() == null) {
             return;
         }
-
-        // 保存分辨率
+        
         String oldResolution = appConfig.getTargetResolution();
         appConfig.setTargetResolution(selectedResolution);
         
-        // 保存码率
-        String oldBitrate = appConfig.getBitrateLevel();
-        appConfig.setBitrateLevel(selectedBitrateLevel);
-        
-        // 保存帧率
-        String oldFramerate = appConfig.getFramerateLevel();
-        appConfig.setFramerateLevel(selectedFramerateLevel);
-
         String resolutionName = AppConfig.RESOLUTION_DEFAULT.equals(selectedResolution) 
                 ? "默认 (1280×800)" 
                 : selectedResolution;
+        
+        Toast.makeText(getContext(), "分辨率已设置为: " + resolutionName + "\n重启应用后生效", Toast.LENGTH_SHORT).show();
+        AppLog.d(TAG, "分辨率已保存: " + oldResolution + " -> " + selectedResolution);
+        
+        // 更新当前参数显示
+        displayCurrentParams();
+    }
+    
+    /**
+     * 保存码率设置
+     */
+    private void saveBitrate() {
+        if (appConfig == null || getContext() == null) {
+            return;
+        }
+        
+        String oldBitrate = appConfig.getBitrateLevel();
+        appConfig.setBitrateLevel(selectedBitrateLevel);
+        
         String bitrateName = AppConfig.getBitrateLevelDisplayName(selectedBitrateLevel);
+        
+        Toast.makeText(getContext(), "码率已设置为: " + bitrateName + "\n重启应用后生效", Toast.LENGTH_SHORT).show();
+        AppLog.d(TAG, "码率已保存: " + oldBitrate + " -> " + selectedBitrateLevel);
+        
+        // 更新当前参数显示
+        displayCurrentParams();
+    }
+    
+    /**
+     * 保存帧率设置
+     */
+    private void saveFramerate() {
+        if (appConfig == null || getContext() == null) {
+            return;
+        }
+        
+        String oldFramerate = appConfig.getFramerateLevel();
+        appConfig.setFramerateLevel(selectedFramerateLevel);
+        
         String framerateName = AppConfig.getFramerateLevelDisplayName(selectedFramerateLevel);
         
-        Toast.makeText(getContext(), 
-                "设置已保存\n分辨率: " + resolutionName + "\n码率: " + bitrateName + 
-                "\n帧率: " + framerateName + "\n重启应用后生效", 
-                Toast.LENGTH_LONG).show();
+        Toast.makeText(getContext(), "帧率已设置为: " + framerateName + "\n重启应用后生效", Toast.LENGTH_SHORT).show();
+        AppLog.d(TAG, "帧率已保存: " + oldFramerate + " -> " + selectedFramerateLevel);
         
-        AppLog.d(TAG, "配置已保存: 分辨率 " + oldResolution + " -> " + selectedResolution + 
-                ", 码率 " + oldBitrate + " -> " + selectedBitrateLevel +
-                ", 帧率 " + oldFramerate + " -> " + selectedFramerateLevel);
-
-        // 返回上一级
-        if (getActivity() != null) {
-            getActivity().getSupportFragmentManager().popBackStack();
-        }
+        // 更新当前参数显示
+        displayCurrentParams();
     }
 }

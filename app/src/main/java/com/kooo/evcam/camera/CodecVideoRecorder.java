@@ -79,6 +79,7 @@ public class CodecVideoRecorder {
 
     // 分段录制相关
     private long segmentDurationMs = 60000;  // 分段时长，默认1分钟，可通过 setSegmentDuration 配置
+    private static final long SEGMENT_DURATION_COMPENSATION_MS = 1000;  // 分段时长补偿（补偿编码器初始化和停止延迟）
     private Handler segmentHandler;
     private Runnable segmentRunnable;
     private int segmentIndex = 0;
@@ -655,6 +656,11 @@ public class CodecVideoRecorder {
 
     /**
      * 调度下一段录制
+     * 
+     * 注意：分段时长需要加上补偿时间，因为：
+     * 1. 编码器初始化需要时间
+     * 2. 停止时需要排空编码器缓冲区
+     * 3. 这样可以确保实际录制的视频时长达到设定的分段时长
      */
     private void scheduleNextSegment() {
         if (segmentRunnable != null) {
@@ -669,8 +675,11 @@ public class CodecVideoRecorder {
             }
         };
 
-        segmentHandler.postDelayed(segmentRunnable, segmentDurationMs);
-        AppLog.d(TAG, "Camera " + cameraId + " Scheduled next segment in " + (segmentDurationMs / 1000) + " seconds");
+        // 延迟执行（使用配置的分段时长 + 补偿时间）
+        // 补偿编码器初始化延迟和停止时的帧丢失
+        long actualDelayMs = segmentDurationMs + SEGMENT_DURATION_COMPENSATION_MS;
+        segmentHandler.postDelayed(segmentRunnable, actualDelayMs);
+        AppLog.d(TAG, "Camera " + cameraId + " Scheduled next segment in " + (segmentDurationMs / 1000) + " seconds (actual delay: " + actualDelayMs + "ms)");
     }
 
     /**

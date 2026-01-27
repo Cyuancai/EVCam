@@ -38,6 +38,8 @@ public class SettingsFragment extends Fragment {
     private Button saveLogsButton;
     private SwitchMaterial autoStartSwitch;
     private SwitchMaterial autoStartRecordingSwitch;
+    private SwitchMaterial screenOffRecordingSwitch;
+    private LinearLayout screenOffRecordingLayout;
     private SwitchMaterial keepAliveSwitch;
     private SwitchMaterial preventSleepSwitch;
     private SwitchMaterial recordingStatsSwitch;
@@ -82,6 +84,7 @@ public class SettingsFragment extends Fragment {
     private boolean isInitializingStorageLocation = false;
     private String lastAppliedStorageLocation = null;
     private boolean hasExternalSdCard = false;
+    
     
     // 存储清理配置相关
     private EditText videoStorageLimitEdit;
@@ -247,11 +250,33 @@ public class SettingsFragment extends Fragment {
             autoStartRecordingSwitch.setChecked(appConfig.isAutoStartRecording());
         }
 
+        // 初始化息屏录制开关
+        screenOffRecordingSwitch = view.findViewById(R.id.switch_screen_off_recording);
+        screenOffRecordingLayout = view.findViewById(R.id.layout_screen_off_recording);
+        if (getContext() != null && appConfig != null) {
+            screenOffRecordingSwitch.setChecked(appConfig.isScreenOffRecordingEnabled());
+            // 根据启动自动录制的状态决定是否显示息屏录制开关
+            updateScreenOffRecordingVisibility(appConfig.isAutoStartRecording());
+        }
+
         // 设置启动自动录制开关监听器
         autoStartRecordingSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
             if (getContext() != null && appConfig != null) {
                 appConfig.setAutoStartRecording(isChecked);
                 String message = isChecked ? "启动自动录制已启用，下次启动生效" : "启动自动录制已禁用";
+                Toast.makeText(getContext(), message, Toast.LENGTH_SHORT).show();
+                AppLog.d("SettingsFragment", message);
+                
+                // 更新息屏录制开关的可见性
+                updateScreenOffRecordingVisibility(isChecked);
+            }
+        });
+
+        // 设置息屏录制开关监听器
+        screenOffRecordingSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (getContext() != null && appConfig != null) {
+                appConfig.setScreenOffRecordingEnabled(isChecked);
+                String message = isChecked ? "息屏录制已启用，息屏时将继续录制" : "息屏录制已禁用，息屏10秒后将自动停止录制";
                 Toast.makeText(getContext(), message, Toast.LENGTH_SHORT).show();
                 AppLog.d("SettingsFragment", message);
             }
@@ -663,34 +688,62 @@ public class SettingsFragment extends Fragment {
             floatingWindowSettingsLayout.setVisibility(visible ? View.VISIBLE : View.GONE);
         }
     }
+    
+    /**
+     * 更新息屏录制开关的可见性
+     * 仅当启动自动录制开启时才显示
+     */
+    private void updateScreenOffRecordingVisibility(boolean autoStartRecordingEnabled) {
+        if (screenOffRecordingLayout != null) {
+            screenOffRecordingLayout.setVisibility(autoStartRecordingEnabled ? View.VISIBLE : View.GONE);
+        }
+    }
 
     @Override
     public void onResume() {
         super.onResume();
         
-        // 重新检测 SD 卡（可能在授权后返回）
+        // 重新检测 U盘（可能在授权后返回或U盘插拔）
         if (getContext() != null) {
             boolean newHasSdCard = StorageHelper.hasExternalSdCard(getContext());
+            String currentLocation = appConfig != null ? appConfig.getStorageLocation() : AppConfig.STORAGE_INTERNAL;
+            
             if (newHasSdCard != hasExternalSdCard) {
                 hasExternalSdCard = newHasSdCard;
                 if (storageDebugButton != null) {
                     storageDebugButton.setVisibility(hasExternalSdCard ? View.GONE : View.VISIBLE);
                 }
-                if (hasExternalSdCard && storageLocationSpinner != null) {
-                    storageLocationOptions = new String[] {"内部存储", "外置SD卡"};
+                
+                // 更新 Spinner 选项文字
+                if (storageLocationSpinner != null) {
+                    if (hasExternalSdCard) {
+                        storageLocationOptions = new String[] {"内部存储", "U盘"};
+                    } else {
+                        storageLocationOptions = new String[] {"内部存储", "U盘（未检测到）"};
+                    }
                     ArrayAdapter<String> adapter = new ArrayAdapter<>(
                             getContext(),
                             R.layout.spinner_item,
                             storageLocationOptions
                     );
                     adapter.setDropDownViewResource(R.layout.spinner_dropdown_item);
+                    
+                    isInitializingStorageLocation = true;
                     storageLocationSpinner.setAdapter(adapter);
-                    Toast.makeText(getContext(), "检测到外置SD卡", Toast.LENGTH_SHORT).show();
-                    // 更新描述文字
-                    String currentLocation = appConfig != null ? appConfig.getStorageLocation() : AppConfig.STORAGE_INTERNAL;
-                    updateStorageLocationDescription(currentLocation);
+                    
+                    // 恢复用户之前的选择
+                    int selectedIndex = AppConfig.STORAGE_EXTERNAL_SD.equals(currentLocation) ? 1 : 0;
+                    storageLocationSpinner.setSelection(selectedIndex);
+                    storageLocationSpinner.post(() -> isInitializingStorageLocation = false);
+                    
+                    if (hasExternalSdCard) {
+                        Toast.makeText(getContext(), "检测到U盘", Toast.LENGTH_SHORT).show();
+                    }
                 }
             }
+            
+            // 始终更新描述文字（可能U盘状态变化或空间变化）
+            updateStorageLocationDescription(currentLocation);
             
             // 更新存储占用大小显示
             updateStorageUsedSizeDisplay();
@@ -1135,10 +1188,10 @@ public class SettingsFragment extends Fragment {
         isInitializingStorageLocation = true;
         lastAppliedStorageLocation = (appConfig != null) ? appConfig.getStorageLocation() : null;
         
-        // 检测是否有外置SD卡
+        // 检测是否有U盘
         hasExternalSdCard = StorageHelper.hasExternalSdCard(getContext());
         
-        // 如果未检测到SD卡，显示调试按钮
+        // 如果未检测到U盘，显示调试按钮
         if (storageDebugButton != null) {
             storageDebugButton.setVisibility(hasExternalSdCard ? View.GONE : View.VISIBLE);
             storageDebugButton.setOnClickListener(v -> showStorageDebugInfo());
@@ -1146,9 +1199,9 @@ public class SettingsFragment extends Fragment {
         
         // 动态生成选项（简短文字，详细信息在描述中显示）
         if (hasExternalSdCard) {
-            storageLocationOptions = new String[] {"内部存储", "外置SD卡"};
+            storageLocationOptions = new String[] {"内部存储", "U盘"};
         } else {
-            storageLocationOptions = new String[] {"内部存储", "外置SD卡（未检测到）"};
+            storageLocationOptions = new String[] {"内部存储", "U盘（未检测到）"};
         }
         
         ArrayAdapter<String> adapter = new ArrayAdapter<>(
@@ -1169,15 +1222,12 @@ public class SettingsFragment extends Fragment {
                     newLocation = AppConfig.STORAGE_INTERNAL;
                     locationName = "内部存储";
                 } else {
-                    if (!hasExternalSdCard) {
-                        if (!isInitializingStorageLocation && getContext() != null) {
-                            Toast.makeText(getContext(), "未检测到外置SD卡，请先在权限设置中授予「所有文件访问权限」", Toast.LENGTH_LONG).show();
-                            storageLocationSpinner.setSelection(0);
-                        }
-                        return;
-                    }
                     newLocation = AppConfig.STORAGE_EXTERNAL_SD;
-                    locationName = "外置SD卡";
+                    locationName = "U盘";
+                    // 如果U盘不可用，显示警告但仍然允许用户选择
+                    if (!hasExternalSdCard && !isInitializingStorageLocation && getContext() != null) {
+                        Toast.makeText(getContext(), "当前未检测到U盘，录制将临时使用内部存储", Toast.LENGTH_LONG).show();
+                    }
                 }
                 
                 updateStorageLocationDescription(newLocation);
@@ -1207,7 +1257,8 @@ public class SettingsFragment extends Fragment {
         
         String currentLocation = appConfig.getStorageLocation();
         int selectedIndex = 0;
-        if (AppConfig.STORAGE_EXTERNAL_SD.equals(currentLocation) && hasExternalSdCard) {
+        // 保持用户选择的存储位置，即使U盘不可用也显示选中状态
+        if (AppConfig.STORAGE_EXTERNAL_SD.equals(currentLocation)) {
             selectedIndex = 1;
         }
         storageLocationSpinner.setSelection(selectedIndex);
@@ -1228,6 +1279,9 @@ public class SettingsFragment extends Fragment {
         }
         
         boolean useExternal = AppConfig.STORAGE_EXTERNAL_SD.equals(location);
+        // 检测是否发生回退（用户选择了U盘但不可用）
+        boolean isFallback = useExternal && !hasExternalSdCard;
+        
         java.io.File videoDir = useExternal ? 
                 StorageHelper.getVideoDir(getContext(), true) :
                 StorageHelper.getVideoDir(getContext(), false);
@@ -1248,9 +1302,9 @@ public class SettingsFragment extends Fragment {
             // XXXX-XXXX 格式是 SD 卡
             int dcimIndex = path.indexOf("/DCIM/");
             if (dcimIndex > 0) {
-                displayPath = "SD卡" + path.substring(dcimIndex);
+                displayPath = "U盘" + path.substring(dcimIndex);
             } else {
-                displayPath = "SD卡/" + path.substring(path.lastIndexOf("/") + 1);
+                displayPath = "U盘/" + path.substring(path.lastIndexOf("/") + 1);
             }
         } else {
             // 其他路径原样显示
@@ -1263,7 +1317,12 @@ public class SettingsFragment extends Fragment {
         String availableStr = StorageHelper.formatSize(availableSpace);
         String totalStr = StorageHelper.formatSize(totalSpace);
         
-        storageLocationDescText.setText(displayPath + "\n可用: " + availableStr + " / 共: " + totalStr);
+        // 如果发生回退，显示提示
+        if (isFallback) {
+            storageLocationDescText.setText("⚠ U盘不可用，临时使用内部存储\n" + displayPath + "\n可用: " + availableStr + " / 共: " + totalStr);
+        } else {
+            storageLocationDescText.setText(displayPath + "\n可用: " + availableStr + " / 共: " + totalStr);
+        }
     }
     
     /**
@@ -1287,7 +1346,7 @@ public class SettingsFragment extends Fragment {
                 sb.append("已授权 ✓\n");
             } else {
                 sb.append("未授权 ✗\n");
-                sb.append("⚠️ 提示: 访问外置SD卡需要此权限！\n");
+                sb.append("⚠️ 提示: 访问U盘需要此权限！\n");
                 sb.append("   请前往「权限设置」授予「所有文件访问权限」\n");
             }
         } else {
@@ -1311,7 +1370,7 @@ public class SettingsFragment extends Fragment {
         
         // 显示当前自定义路径
         String customPath = appConfig.getCustomSdCardPath();
-        sb.append("\n=== 自定义SD卡路径 ===\n");
+        sb.append("\n=== 自定义U盘路径 ===\n");
         if (customPath != null) {
             sb.append("当前设置: " + customPath + "\n");
             java.io.File customDir = new java.io.File(customPath);
@@ -1347,7 +1406,7 @@ public class SettingsFragment extends Fragment {
     }
     
     /**
-     * 显示手动设置SD卡路径对话框
+     * 显示手动设置U盘路径对话框
      */
     private void showManualSdCardPathDialog() {
         if (getContext() == null) return;
@@ -1373,8 +1432,8 @@ public class SettingsFragment extends Fragment {
         container.addView(input);
         
         new com.google.android.material.dialog.MaterialAlertDialogBuilder(getContext())
-                .setTitle("手动设置SD卡路径")
-                .setMessage("如果自动检测失败，你可以手动输入SD卡的挂载路径。\n\n" +
+                .setTitle("手动设置U盘路径")
+                .setMessage("如果自动检测失败，你可以手动输入U盘的挂载路径。\n\n" +
                         "常见格式：/storage/XXXX-XXXX（十六进制ID）\n\n" +
                         "留空表示使用自动检测。")
                 .setView(container)
@@ -1392,7 +1451,7 @@ public class SettingsFragment extends Fragment {
                         } else if (!testDir.canWrite()) {
                             Toast.makeText(getContext(), "警告：路径不可写，但已保存", Toast.LENGTH_LONG).show();
                         } else {
-                            Toast.makeText(getContext(), "SD卡路径已设置", Toast.LENGTH_SHORT).show();
+                            Toast.makeText(getContext(), "U盘路径已设置", Toast.LENGTH_SHORT).show();
                         }
                         appConfig.setCustomSdCardPath(path);
                     }
@@ -1403,7 +1462,7 @@ public class SettingsFragment extends Fragment {
                         storageDebugButton.setVisibility(hasExternalSdCard ? View.GONE : View.VISIBLE);
                     }
                     if (hasExternalSdCard && storageLocationSpinner != null) {
-                        storageLocationOptions = new String[] {"内部存储", "外置SD卡"};
+                        storageLocationOptions = new String[] {"内部存储", "U盘"};
                         ArrayAdapter<String> adapter = new ArrayAdapter<>(
                                 getContext(),
                                 R.layout.spinner_item,

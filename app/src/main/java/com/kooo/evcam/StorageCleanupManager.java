@@ -37,6 +37,12 @@ public class StorageCleanupManager {
     // GB 转 字节
     private static final long GB_TO_BYTES = 1024L * 1024L * 1024L;
     
+    // 内部存储低空间阈值（3GB）
+    private static final long LOW_SPACE_THRESHOLD_BYTES = 3L * GB_TO_BYTES;
+    
+    // 低空间强制清理比例（删除20%的已用空间，保留80%）
+    private static final double LOW_SPACE_CLEANUP_RATIO = 0.20;
+    
     private final Context context;
     private final AppConfig appConfig;
     private ScheduledExecutorService scheduler;
@@ -52,16 +58,11 @@ public class StorageCleanupManager {
     /**
      * 启动存储清理任务
      * 冷启动30秒后执行首次检测，之后每隔1小时执行一次
+     * 注意：即使清理功能未启用，也会启动以检测内部存储低空间情况
      */
     public void start() {
         if (isRunning) {
             AppLog.d(TAG, "存储清理任务已在运行");
-            return;
-        }
-        
-        // 检查是否启用了存储清理
-        if (!appConfig.isStorageCleanupEnabled()) {
-            AppLog.d(TAG, "存储清理功能未启用（限制为0或未设置）");
             return;
         }
         
@@ -101,6 +102,9 @@ public class StorageCleanupManager {
     private void performCleanup() {
         AppLog.d(TAG, "开始执行存储清理检测...");
         
+        // 首先检测内部存储低空间情况（强制清理）
+        performLowSpaceCleanupIfNeeded();
+        
         int videoLimitGb = appConfig.getVideoStorageLimitGb();
         int photoLimitGb = appConfig.getPhotoStorageLimitGb();
         
@@ -129,6 +133,126 @@ public class StorageCleanupManager {
         }
         
         AppLog.d(TAG, "存储清理检测完成");
+    }
+    
+    /**
+     * 内部存储低空间时强制清理
+     * 当使用内部存储且可用空间低于3GB时，强制清理20%的已用空间
+     */
+    private void performLowSpaceCleanupIfNeeded() {
+        // 检测当前是否使用内部存储
+        boolean usingInternal = !appConfig.isUsingExternalSdCard() || StorageHelper.isSdCardFallback(context);
+        
+        if (!usingInternal) {
+            // 使用U盘，不需要强制清理
+            return;
+        }
+        
+        // 获取内部存储可用空间
+        File internalDir = android.os.Environment.getExternalStorageDirectory();
+        long availableSpace = StorageHelper.getAvailableSpace(internalDir);
+        
+        AppLog.d(TAG, "内部存储可用空间: " + StorageHelper.formatSize(availableSpace));
+        
+        if (availableSpace < 0 || availableSpace >= LOW_SPACE_THRESHOLD_BYTES) {
+            // 空间充足，不需要清理
+            return;
+        }
+        
+        AppLog.w(TAG, "内部存储空间不足（<3GB），开始强制清理...");
+        
+        // 强制清理视频（删除20%的已用空间）
+        File videoDir = StorageHelper.getVideoDir(context, false);
+        CleanupResult videoResult = cleanupByPercentage(videoDir, LOW_SPACE_CLEANUP_RATIO, "视频");
+        if (videoResult.deletedCount > 0) {
+            showLowSpaceCleanupNotification(videoResult, "视频");
+        }
+        
+        // 强制清理图片（删除20%的已用空间）
+        File photoDir = StorageHelper.getPhotoDir(context, false);
+        CleanupResult photoResult = cleanupByPercentage(photoDir, LOW_SPACE_CLEANUP_RATIO, "图片");
+        if (photoResult.deletedCount > 0) {
+            showLowSpaceCleanupNotification(photoResult, "图片");
+        }
+    }
+    
+    /**
+     * 按比例清理目录（删除指定比例的已用空间）
+     * @param directory 目标目录
+     * @param deleteRatio 删除比例（0.0-1.0）
+     * @param typeName 类型名称
+     * @return 清理结果
+     */
+    private CleanupResult cleanupByPercentage(File directory, double deleteRatio, String typeName) {
+        CleanupResult result = new CleanupResult();
+        
+        if (directory == null || !directory.exists() || !directory.isDirectory()) {
+            return result;
+        }
+        
+        File[] files = directory.listFiles(File::isFile);
+        if (files == null || files.length == 0) {
+            return result;
+        }
+        
+        // 计算当前总大小
+        long totalSize = 0;
+        for (File file : files) {
+            totalSize += file.length();
+        }
+        
+        result.originalSize = totalSize;
+        
+        if (totalSize == 0) {
+            return result;
+        }
+        
+        // 计算需要删除的大小（总大小的指定比例）
+        long needToDelete = (long) (totalSize * deleteRatio);
+        long targetSize = totalSize - needToDelete;
+        
+        AppLog.d(TAG, typeName + "强制清理：当前占用 " + StorageHelper.formatSize(totalSize) + 
+                "，将删除 " + StorageHelper.formatSize(needToDelete) + " (20%)");
+        
+        // 按修改时间排序（最旧的在前）
+        List<File> sortedFiles = new ArrayList<>(Arrays.asList(files));
+        sortedFiles.sort(Comparator.comparingLong(File::lastModified));
+        
+        // 删除最旧的文件直到达到目标大小
+        long deletedSize = 0;
+        int deletedCount = 0;
+        
+        for (File file : sortedFiles) {
+            if (totalSize - deletedSize <= targetSize) {
+                break;
+            }
+            
+            long fileSize = file.length();
+            if (file.delete()) {
+                deletedSize += fileSize;
+                deletedCount++;
+                AppLog.d(TAG, "强制删除旧文件: " + file.getName() + " (" + StorageHelper.formatSize(fileSize) + ")");
+            }
+        }
+        
+        result.deletedSize = deletedSize;
+        result.deletedCount = deletedCount;
+        result.finalSize = totalSize - deletedSize;
+        
+        AppLog.d(TAG, typeName + "强制清理完成：删除 " + deletedCount + " 个文件，释放 " + StorageHelper.formatSize(deletedSize));
+        
+        return result;
+    }
+    
+    /**
+     * 显示低空间强制清理通知
+     */
+    private void showLowSpaceCleanupNotification(CleanupResult result, String typeName) {
+        mainHandler.post(() -> {
+            String message = "内部存储空间不足，已清理" + typeName + " " + 
+                    result.deletedCount + "个文件（" + StorageHelper.formatSize(result.deletedSize) + "）";
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show();
+        });
     }
     
     /**

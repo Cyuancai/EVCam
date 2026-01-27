@@ -32,6 +32,7 @@ public class VideoRecorder {
 
     // 分段录制相关
     private long segmentDurationMs = 60000;  // 分段时长，默认1分钟，可通过 setSegmentDuration 配置
+    private static final long SEGMENT_DURATION_COMPENSATION_MS = 1000;  // 分段时长补偿（补偿编码器初始化和停止延迟）
     private static final long FILE_SIZE_CHECK_INTERVAL_MS = 5000;  // 每5秒检查一次文件大小
     private android.os.Handler segmentHandler;
     private Runnable segmentRunnable;
@@ -332,6 +333,11 @@ public class VideoRecorder {
 
     /**
      * 调度下一段录制
+     * 
+     * 注意：分段时长需要加上补偿时间，因为：
+     * 1. MediaRecorder.start() 后需要时间初始化编码器
+     * 2. MediaRecorder.stop() 时可能丢失正在编码的帧
+     * 3. 这样可以确保实际录制的视频时长达到设定的分段时长
      */
     private void scheduleNextSegment() {
         // 取消之前的定时器
@@ -347,9 +353,11 @@ public class VideoRecorder {
             }
         };
 
-        // 延迟执行（使用配置的分段时长）
-        segmentHandler.postDelayed(segmentRunnable, segmentDurationMs);
-        AppLog.d(TAG, "Camera " + cameraId + " scheduled next segment in " + (segmentDurationMs / 1000) + " seconds");
+        // 延迟执行（使用配置的分段时长 + 补偿时间）
+        // 补偿编码器初始化延迟和停止时的帧丢失
+        long actualDelayMs = segmentDurationMs + SEGMENT_DURATION_COMPENSATION_MS;
+        segmentHandler.postDelayed(segmentRunnable, actualDelayMs);
+        AppLog.d(TAG, "Camera " + cameraId + " scheduled next segment in " + (segmentDurationMs / 1000) + " seconds (actual delay: " + actualDelayMs + "ms)");
     }
 
     /**

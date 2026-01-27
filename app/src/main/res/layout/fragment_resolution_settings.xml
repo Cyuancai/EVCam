@@ -284,18 +284,6 @@
                     android:lineSpacingExtra="2dp" />
             </LinearLayout>
 
-            <!-- 保存按钮 -->
-            <Button
-                android:id="@+id/btn_save"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="保存设置"
-                android:textSize="20sp"
-                android:minHeight="56dp"
-                android:backgroundTint="@color/button_background"
-                android:textColor="@color/button_text"
-                android:layout_marginTop="8dp"
-                android:layout_marginBottom="24dp" />
 
         </LinearLayout>
     </ScrollView>

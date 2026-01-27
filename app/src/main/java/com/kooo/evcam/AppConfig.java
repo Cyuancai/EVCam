@@ -15,17 +15,22 @@ public class AppConfig {
     private static final String KEY_FIRST_LAUNCH = "first_launch";  // 首次启动标记
     private static final String KEY_AUTO_START_ON_BOOT = "auto_start_on_boot";  // 开机自启动
     private static final String KEY_AUTO_START_RECORDING = "auto_start_recording";  // 启动自动录制
+    private static final String KEY_SCREEN_OFF_RECORDING = "screen_off_recording";  // 息屏录制（锁车录制）
     private static final String KEY_KEEP_ALIVE_ENABLED = "keep_alive_enabled";  // 保活服务
     private static final String KEY_PREVENT_SLEEP_ENABLED = "prevent_sleep_enabled";  // 防止休眠（持续WakeLock）
     private static final String KEY_RECORDING_MODE = "recording_mode";  // 录制模式
     
     // 存储位置配置
     private static final String KEY_STORAGE_LOCATION = "storage_location";  // 存储位置
-    private static final String KEY_CUSTOM_SD_CARD_PATH = "custom_sd_card_path";  // 手动设置的SD卡路径
+    private static final String KEY_CUSTOM_SD_CARD_PATH = "custom_sd_card_path";  // 手动设置的U盘路径
+    private static final String KEY_LAST_DETECTED_SD_PATH = "last_detected_sd_path";  // 上次自动检测到的U盘路径（缓存）
     
     // 存储位置常量
     public static final String STORAGE_INTERNAL = "internal";  // 内部存储（默认）
-    public static final String STORAGE_EXTERNAL_SD = "external_sd";  // 外置SD卡
+    public static final String STORAGE_EXTERNAL_SD = "external_sd";  // U盘
+    
+    // U盘回退提示标志（每次冷启动后重置）
+    private static boolean sdFallbackShownThisSession = false;
     
     // 悬浮窗配置
     private static final String KEY_FLOATING_WINDOW_ENABLED = "floating_window_enabled";  // 悬浮窗开关
@@ -180,6 +185,24 @@ public class AppConfig {
     public boolean isAutoStartRecording() {
         // 默认禁用启动自动录制（需要用户主动开启）
         return prefs.getBoolean(KEY_AUTO_START_RECORDING, false);
+    }
+    
+    /**
+     * 设置息屏录制（锁车录制）
+     * @param enabled true 表示息屏时继续录制
+     */
+    public void setScreenOffRecordingEnabled(boolean enabled) {
+        prefs.edit().putBoolean(KEY_SCREEN_OFF_RECORDING, enabled).apply();
+        AppLog.d(TAG, "息屏录制设置: " + (enabled ? "启用" : "禁用"));
+    }
+    
+    /**
+     * 获取息屏录制设置
+     * @return true 表示息屏时继续录制
+     */
+    public boolean isScreenOffRecordingEnabled() {
+        // 默认禁用息屏录制
+        return prefs.getBoolean(KEY_SCREEN_OFF_RECORDING, false);
     }
     
     /**
@@ -832,29 +855,29 @@ public class AppConfig {
     }
     
     /**
-     * 是否使用外置SD卡存储
-     * @return true 表示使用外置SD卡
+     * 是否使用U盘存储
+     * @return true 表示使用U盘
      */
     public boolean isUsingExternalSdCard() {
         return STORAGE_EXTERNAL_SD.equals(getStorageLocation());
     }
     
     /**
-     * 设置自定义SD卡路径
-     * @param path SD卡路径，设为null或空字符串表示使用自动检测
+     * 设置自定义U盘路径
+     * @param path U盘路径，设为null或空字符串表示使用自动检测
      */
     public void setCustomSdCardPath(String path) {
         if (path == null || path.trim().isEmpty()) {
             prefs.edit().remove(KEY_CUSTOM_SD_CARD_PATH).apply();
-            AppLog.d(TAG, "清除自定义SD卡路径，使用自动检测");
+            AppLog.d(TAG, "清除自定义U盘路径，使用自动检测");
         } else {
             prefs.edit().putString(KEY_CUSTOM_SD_CARD_PATH, path.trim()).apply();
-            AppLog.d(TAG, "设置自定义SD卡路径: " + path.trim());
+            AppLog.d(TAG, "设置自定义U盘路径: " + path.trim());
         }
     }
     
     /**
-     * 获取自定义SD卡路径
+     * 获取自定义U盘路径
      * @return 自定义路径，如果未设置返回null
      */
     public String getCustomSdCardPath() {
@@ -866,10 +889,61 @@ public class AppConfig {
     }
     
     /**
-     * 是否使用自定义SD卡路径
+     * 是否使用自定义U盘路径
      */
     public boolean hasCustomSdCardPath() {
         return getCustomSdCardPath() != null;
+    }
+    
+    /**
+     * 设置上次自动检测到的U盘路径（缓存）
+     * @param path U盘路径
+     */
+    public void setLastDetectedSdPath(String path) {
+        if (path == null || path.trim().isEmpty()) {
+            prefs.edit().remove(KEY_LAST_DETECTED_SD_PATH).apply();
+        } else {
+            prefs.edit().putString(KEY_LAST_DETECTED_SD_PATH, path.trim()).apply();
+            AppLog.d(TAG, "缓存U盘路径: " + path.trim());
+        }
+    }
+    
+    /**
+     * 获取上次自动检测到的U盘路径（缓存）
+     * @return 缓存的路径，如果未设置返回null
+     */
+    public String getLastDetectedSdPath() {
+        return prefs.getString(KEY_LAST_DETECTED_SD_PATH, null);
+    }
+    
+    /**
+     * 检查本次启动是否已显示过U盘回退提示
+     */
+    public static boolean isSdFallbackShownThisSession() {
+        return sdFallbackShownThisSession;
+    }
+    
+    /**
+     * 标记本次启动已显示过U盘回退提示
+     */
+    public static void setSdFallbackShownThisSession(boolean shown) {
+        sdFallbackShownThisSession = shown;
+    }
+    
+    /**
+     * 重置U盘回退提示标志（应用启动时调用）
+     */
+    public static void resetSdFallbackFlag() {
+        sdFallbackShownThisSession = false;
+    }
+    
+    /**
+     * 检查当前是否应该使用中转写入
+     * 当选择U盘存储时，始终使用中转写入以避免U盘慢速写入导致录制卡顿
+     * @return true 表示应该使用中转写入
+     */
+    public boolean shouldUseRelayWrite() {
+        return isUsingExternalSdCard();
     }
     
     // ==================== 悬浮窗配置相关方法 ====================
@@ -966,10 +1040,10 @@ public class AppConfig {
     
     /**
      * 获取视频存储限制（GB）
-     * @return 存储限制，单位GB，0表示不限制
+     * @return 存储限制，单位GB，0表示不限制，默认10GB
      */
     public int getVideoStorageLimitGb() {
-        return prefs.getInt(KEY_VIDEO_STORAGE_LIMIT_GB, 0);
+        return prefs.getInt(KEY_VIDEO_STORAGE_LIMIT_GB, 10);
     }
     
     /**
@@ -983,10 +1057,10 @@ public class AppConfig {
     
     /**
      * 获取图片存储限制（GB）
-     * @return 存储限制，单位GB，0表示不限制
+     * @return 存储限制，单位GB，0表示不限制，默认10GB
      */
     public int getPhotoStorageLimitGb() {
-        return prefs.getInt(KEY_PHOTO_STORAGE_LIMIT_GB, 0);
+        return prefs.getInt(KEY_PHOTO_STORAGE_LIMIT_GB, 10);
     }
     
     /**
