@@ -66,6 +66,10 @@ public class CodecVideoRecorder {
     private HandlerThread encoderThread;
     private Handler encoderHandler;
 
+    // 【优化1】独立的 muxer 线程，用于异步写入文件，避免阻塞帧处理
+    private HandlerThread muxerThread;
+    private Handler muxerHandler;
+
     // 状态
     private final AtomicBoolean isRecording = new AtomicBoolean(false);  // 使用 AtomicBoolean 确保线程安全
     private volatile boolean isReleased = false;
@@ -130,6 +134,10 @@ public class CodecVideoRecorder {
     private boolean watermarkEnabled = false;
 
     // 注意：帧同步变量已移除，帧处理现在直接在 onFrameAvailable 回调中完成
+
+    // 【优化】共享 TextureView 模式：复用 TextureView 的 SurfaceTexture，避免 Camera 双路输出
+    private boolean sharedTextureMode = false;
+    private SurfaceTexture externalSurfaceTexture = null;  // 外部传入的 SurfaceTexture（来自 TextureView）
 
     public CodecVideoRecorder(String cameraId, int width, int height) {
         this.cameraId = cameraId;
@@ -214,6 +222,22 @@ public class CodecVideoRecorder {
     }
 
     /**
+     * 【优化】设置预览 Surface（用于双目标渲染模式）
+     * 启用后，每帧会同时渲染到编码器和预览 Surface
+     * 这样 Camera 只需要输出到录制 Surface，大幅减少 Camera 负载
+     * 
+     * @param surface TextureView 的 Surface
+     */
+    public void setPreviewSurface(Surface surface) {
+        if (eglEncoder != null) {
+            eglEncoder.setPreviewSurface(surface);
+            AppLog.d(TAG, "Camera " + cameraId + " Preview surface set for dual-target rendering");
+        } else {
+            AppLog.w(TAG, "Camera " + cameraId + " EGL encoder not initialized, preview surface not set");
+        }
+    }
+
+    /**
      * 准备录制
      * 
      * 警告：此方法包含阻塞操作（CountDownLatch.await），不建议在主线程调用
@@ -268,6 +292,11 @@ public class CodecVideoRecorder {
             encoderThread = new HandlerThread("Encoder-" + cameraId);
             encoderThread.start();
             encoderHandler = new Handler(encoderThread.getLooper());
+
+            // 【优化1】创建独立的 muxer 线程，用于异步写入文件
+            muxerThread = new HandlerThread("Muxer-" + cameraId);
+            muxerThread.start();
+            muxerHandler = new Handler(muxerThread.getLooper());
 
             // 创建 MediaCodec 编码器
             createEncoder();
@@ -343,8 +372,11 @@ public class CodecVideoRecorder {
                                 }
                             }
 
-                            // 从编码器获取输出数据并写入 muxer
-                            drainEncoder(false);
+                            // 【优化1】异步排空编码器，不阻塞帧处理
+                            // 将 drainEncoder 移到独立的 muxer 线程，避免 I/O 操作阻塞帧回调
+                            if (muxerHandler != null) {
+                                muxerHandler.post(() -> drainEncoder(false));
+                            }
 
                         } catch (Exception e) {
                             AppLog.e(TAG, "Camera " + cameraId + " Error processing frame", e);
@@ -442,6 +474,201 @@ public class CodecVideoRecorder {
     }
 
     /**
+     * 【优化】使用共享 TextureView 模式准备录制
+     * 
+     * 此模式下，CodecVideoRecorder 复用 TextureView 的 SurfaceTexture，
+     * 不再创建自己的 SurfaceTexture。这样 Camera 只需要输出到一个 Surface，
+     * 大幅减少 Camera 的负载，提升预览流畅度。
+     * 
+     * 流程：
+     * 1. Camera → TextureView.SurfaceTexture → 预览（系统自动显示）
+     * 2. 当 TextureView 收到新帧时，调用 onNewFrameAvailable() 触发编码
+     * 
+     * @param filePath 输出文件路径
+     * @param externalTexture 来自 TextureView 的 SurfaceTexture
+     * @return true 如果准备成功
+     */
+    public boolean prepareRecordingSharedTexture(String filePath, SurfaceTexture externalTexture) {
+        if (isRecording.get()) {
+            AppLog.w(TAG, "Camera " + cameraId + " is already recording");
+            return false;
+        }
+
+        if (externalTexture == null) {
+            AppLog.e(TAG, "Camera " + cameraId + " external SurfaceTexture is null");
+            return false;
+        }
+
+        AppLog.d(TAG, "Camera " + cameraId + " Preparing codec recording (SHARED TEXTURE MODE): " + width + "x" + height);
+
+        // 标记为共享模式
+        this.sharedTextureMode = true;
+        this.externalSurfaceTexture = externalTexture;
+
+        // 保存录制参数
+        this.currentFilePath = filePath;
+        this.segmentIndex = 0;
+        this.recordedFrameCount = 0;
+        this.firstFrameTimestampNs = -1;
+        this.encodedOutputFrameCount = 0;
+
+        // 重置健康检查状态
+        this.encoderHealthy = true;
+        this.framesWithoutEncoderOutput = 0;
+        this.lastEncoderOutputTime = System.currentTimeMillis();
+
+        // 清空并初始化本次录制的文件列表
+        recordedFilePaths.clear();
+        recordedFilePaths.add(filePath);
+
+        // 从文件路径中提取保存目录和摄像头位置
+        File file = new File(filePath);
+        this.saveDirectory = file.getParent();
+        String fileName = file.getName();
+        int lastUnderscoreIndex = fileName.lastIndexOf('_');
+        if (lastUnderscoreIndex > 0 && fileName.endsWith(".mp4")) {
+            this.cameraPosition = fileName.substring(lastUnderscoreIndex + 1, fileName.length() - 4);
+        } else {
+            this.cameraPosition = "unknown";
+        }
+
+        try {
+            // 创建编码线程
+            encoderThread = new HandlerThread("Encoder-" + cameraId);
+            encoderThread.start();
+            encoderHandler = new Handler(encoderThread.getLooper());
+
+            // 创建独立的 muxer 线程
+            muxerThread = new HandlerThread("Muxer-" + cameraId);
+            muxerThread.start();
+            muxerHandler = new Handler(muxerThread.getLooper());
+
+            // 创建 MediaCodec 编码器
+            createEncoder();
+
+            // 创建 MediaMuxer
+            createMuxer(filePath);
+
+            // 在编码线程上初始化 EGL（使用外部 SurfaceTexture）
+            final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+            final Exception[] initException = {null};
+
+            encoderHandler.post(() -> {
+                try {
+                    // 创建 EGL 渲染器
+                    eglEncoder = new EglSurfaceEncoder(cameraId, width, height);
+                    textureId = eglEncoder.initialize(encoderInputSurface);
+
+                    // 【关键】使用外部的 SurfaceTexture，而不是创建新的
+                    inputSurfaceTexture = externalTexture;
+
+                    // 设置 EGL 渲染器的输入
+                    eglEncoder.setInputSurfaceTexture(inputSurfaceTexture);
+
+                    // 【关键】设置共享模式：不调用 updateTexImage，因为 TextureView 已处理
+                    eglEncoder.setSharedTextureMode(true);
+
+                    // 设置时间水印
+                    if (watermarkEnabled) {
+                        eglEncoder.setWatermarkEnabled(true);
+                    }
+
+                    AppLog.d(TAG, "Camera " + cameraId + " EGL initialized with SHARED TextureView, textureId=" + textureId);
+
+                } catch (Exception e) {
+                    AppLog.e(TAG, "Camera " + cameraId + " Failed to initialize EGL (shared mode)", e);
+                    initException[0] = e;
+                } finally {
+                    latch.countDown();
+                }
+            });
+
+            // 等待初始化完成
+            if (!latch.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new RuntimeException("Timeout waiting for EGL initialization (shared mode)");
+            }
+
+            if (initException[0] != null) {
+                throw initException[0];
+            }
+
+            AppLog.d(TAG, "Camera " + cameraId + " Codec recording prepared (SHARED TEXTURE MODE)");
+            return true;
+
+        } catch (Exception e) {
+            AppLog.e(TAG, "Camera " + cameraId + " Failed to prepare codec recording (shared mode)", e);
+            release();
+            if (callback != null) {
+                callback.onRecordError(cameraId, e.getMessage());
+            }
+            return false;
+        }
+    }
+
+    /**
+     * 【优化】通知有新帧可用（共享 TextureView 模式专用）
+     * 
+     * 此方法应该在 TextureView.SurfaceTextureListener.onSurfaceTextureUpdated() 中调用。
+     * 当 TextureView 收到新帧后，调用此方法触发编码。
+     * 
+     * 注意：必须在 UI 线程调用（因为 TextureView 的回调在 UI 线程）
+     */
+    public void onNewFrameAvailable() {
+        if (!sharedTextureMode || !isRecording.get() || isReleased) {
+            return;
+        }
+
+        if (!encoderHealthy) {
+            return;  // 编码器不健康，跳过
+        }
+
+        // 将帧处理任务投递到编码线程
+        if (encoderHandler != null) {
+            encoderHandler.post(() -> {
+                try {
+                    if (!isRecording.get() || isReleased || eglEncoder == null) {
+                        return;
+                    }
+
+                    // 使用当前时间作为时间戳
+                    long timestampNs = System.nanoTime();
+                    if (firstFrameTimestampNs < 0) {
+                        firstFrameTimestampNs = timestampNs;
+                        AppLog.d(TAG, "Camera " + cameraId + " (shared mode) First frame timestamp: " + timestampNs + " ns");
+                    }
+                    long relativeTimestampNs = timestampNs - firstFrameTimestampNs;
+
+                    // 渲染帧到编码器
+                    if (eglEncoder.isInitialized()) {
+                        eglEncoder.drawFrame(relativeTimestampNs);
+                        recordedFrameCount++;
+
+                        if (recordedFrameCount % 100 == 0) {
+                            AppLog.d(TAG, "Camera " + cameraId + " (shared mode) Encoded frames: " + recordedFrameCount);
+                        }
+                    }
+
+                    // 异步排空编码器
+                    if (muxerHandler != null) {
+                        muxerHandler.post(() -> drainEncoder(false));
+                    }
+
+                } catch (Exception e) {
+                    AppLog.e(TAG, "Camera " + cameraId + " (shared mode) Error processing frame", e);
+                    encoderHealthy = false;
+                }
+            });
+        }
+    }
+
+    /**
+     * 检查是否处于共享 TextureView 模式
+     */
+    public boolean isSharedTextureMode() {
+        return sharedTextureMode;
+    }
+
+    /**
      * 开始录制
      */
     public boolean startRecording() {
@@ -532,6 +759,22 @@ public class CodecVideoRecorder {
 
         isRecording.set(false);
 
+        // 【优化1】等待 muxer 线程完成所有待处理的写入任务
+        // 使用 CountDownLatch 等待异步任务完成
+        if (muxerHandler != null) {
+            final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+            muxerHandler.post(() -> {
+                // 这个空任务会在所有之前的任务完成后执行
+                latch.countDown();
+            });
+            try {
+                // 等待最多 500ms
+                latch.await(500, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                // Ignore
+            }
+        }
+
         // 稍等一下让正在处理的帧完成
         try {
             Thread.sleep(50);
@@ -539,11 +782,11 @@ public class CodecVideoRecorder {
             // Ignore
         }
 
-        // 发送结束信号给编码器
+        // 发送结束信号给编码器并同步排空（endOfStream 时直接调用，确保所有数据写入）
         if (encoder != null) {
             try {
                 encoder.signalEndOfInputStream();
-                // 排空编码器
+                // 【重要】这里必须同步调用 drainEncoder(true)，确保所有剩余数据写入文件
                 drainEncoder(true);
             } catch (Exception e) {
                 AppLog.e(TAG, "Camera " + cameraId + " Error signaling end of stream", e);
@@ -604,11 +847,13 @@ public class CodecVideoRecorder {
             cachedRecordSurface = null;
         }
 
-        // 释放 SurfaceTexture
-        if (inputSurfaceTexture != null) {
+        // 释放 SurfaceTexture（共享模式下不释放，因为它是外部传入的）
+        if (inputSurfaceTexture != null && !sharedTextureMode) {
             inputSurfaceTexture.release();
-            inputSurfaceTexture = null;
         }
+        inputSurfaceTexture = null;
+        externalSurfaceTexture = null;
+        sharedTextureMode = false;
 
         // 释放编码器
         if (encoder != null) {
@@ -652,6 +897,18 @@ public class CodecVideoRecorder {
             encoderHandler = null;
         }
 
+        // 【优化1】停止 muxer 线程
+        if (muxerThread != null) {
+            muxerThread.quitSafely();
+            try {
+                muxerThread.join(1000);
+            } catch (InterruptedException e) {
+                // Ignore
+            }
+            muxerThread = null;
+            muxerHandler = null;
+        }
+
         // 清理分段处理线程
         if (segmentHandler != null) {
             segmentHandler.removeCallbacksAndMessages(null);
@@ -674,8 +931,15 @@ public class CodecVideoRecorder {
     /**
      * 获取录制用的 Surface（供 Camera 使用）
      * 使用缓存模式避免重复创建 Surface 导致内存泄漏
+     * 
+     * 注意：在共享 TextureView 模式下返回 null，因为 Camera 直接输出到 TextureView
      */
     public Surface getRecordSurface() {
+        // 【优化】共享模式下不需要额外的录制 Surface
+        if (sharedTextureMode) {
+            return null;
+        }
+
         if (inputSurfaceTexture == null) {
             return null;
         }
@@ -716,6 +980,12 @@ public class CodecVideoRecorder {
 
     /**
      * 创建 MediaCodec 编码器
+     * 
+     * 【优化4】编码器性能优化参数：
+     * - 低延迟模式（API 30+）
+     * - 实时优先级（API 23+）
+     * - 禁用 B 帧减少延迟
+     * - 设置较低的编码复杂度
      */
     private void createEncoder() throws IOException {
         MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, width, height);
@@ -723,6 +993,35 @@ public class CodecVideoRecorder {
         format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate);
         format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate);
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL);
+
+        // 【优化4】添加编码器优化参数
+        // 设置低延迟模式（API 30+）- 减少编码器内部缓冲
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+            AppLog.d(TAG, "Camera " + cameraId + " Low latency mode enabled (API 30+)");
+        }
+
+        // 设置优先级为实时（API 23+）- 获得更高的调度优先级
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            format.setInteger(MediaFormat.KEY_PRIORITY, 0);  // 0 = realtime priority
+        }
+
+        // 禁用 B 帧 - 减少编码延迟（B帧需要等待后续帧）
+        // 注意：某些编码器可能不支持此参数，会被忽略
+        try {
+            format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0);
+        } catch (Exception e) {
+            // 忽略不支持的参数
+        }
+
+        // 设置编码档次为 Baseline Profile（不含 B 帧，延迟最低）
+        // 注意：某些设备可能不支持手动设置 profile
+        try {
+            format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline);
+            format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31);
+        } catch (Exception e) {
+            // 忽略不支持的参数
+        }
 
         encoder = MediaCodec.createEncoderByType(MIME_TYPE);
         encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
@@ -733,7 +1032,7 @@ public class CodecVideoRecorder {
         bufferInfo = new MediaCodec.BufferInfo();
 
         AppLog.d(TAG, "Camera " + cameraId + " Encoder created: " + width + "x" + height + 
-                " @ " + frameRate + "fps, " + (bitRate / 1000) + " Kbps");
+                " @ " + frameRate + "fps, " + (bitRate / 1000) + " Kbps (optimized)");
     }
 
     /**
@@ -754,20 +1053,30 @@ public class CodecVideoRecorder {
     /**
      * 排空编码器输出
      * 
+     * 【优化2】性能改进：
+     * - 使用非阻塞模式（超时设为0）快速返回，避免阻塞帧处理
+     * - 批量处理限制：每次最多处理 MAX_DRAIN_COUNT 个缓冲区
+     * - endOfStream 时使用较长超时确保排空所有数据
+     * 
      * 增强错误处理：
      * - 捕获 IllegalStateException 并标记编码器不健康
      * - 跟踪无输出的帧数，用于健康检查
      */
+    private static final int MAX_DRAIN_COUNT = 5;  // 每次最多处理的缓冲区数量
+    
     private void drainEncoder(boolean endOfStream) {
         if (encoder == null) {
             return;
         }
 
-        final int TIMEOUT_USEC = 10000;
+        // 【优化2】非阻塞模式：正常情况下使用 0 超时快速返回
+        // endOfStream 时使用较长超时确保排空所有数据
+        final int TIMEOUT_USEC = endOfStream ? 10000 : 0;
         boolean gotOutput = false;
+        int processedCount = 0;
 
         try {
-            while (true) {
+            while (processedCount < MAX_DRAIN_COUNT || endOfStream) {
                 int outputBufferIndex;
                 try {
                     outputBufferIndex = encoder.dequeueOutputBuffer(bufferInfo, TIMEOUT_USEC);
@@ -780,7 +1089,17 @@ public class CodecVideoRecorder {
 
                 if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
                     if (!endOfStream) {
-                        break;  // 没有数据了
+                        break;  // 【优化2】没有数据了，快速返回处理下一帧
+                    }
+                    // endOfStream 时继续等待，使用更长超时
+                    try {
+                        outputBufferIndex = encoder.dequeueOutputBuffer(bufferInfo, 10000);
+                    } catch (IllegalStateException e) {
+                        encoderHealthy = false;
+                        return;
+                    }
+                    if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                        break;  // 真的没数据了
                     }
                 } else if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     // 输出格式变化，添加视频轨道
@@ -843,6 +1162,8 @@ public class CodecVideoRecorder {
                         encoderHealthy = false;
                         return;
                     }
+
+                    processedCount++;  // 【优化2】增加处理计数
 
                     if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                         break;  // 流结束

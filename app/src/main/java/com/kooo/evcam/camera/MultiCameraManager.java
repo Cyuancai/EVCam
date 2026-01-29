@@ -9,6 +9,7 @@ import android.content.Context;
 import android.os.Environment;
 import android.util.Log;
 import android.util.Size;
+import android.view.Surface;
 import android.view.TextureView;
 
 import java.io.File;
@@ -184,6 +185,9 @@ public class MultiCameraManager {
         this.useCodecRecording = enabled;
         AppLog.d(TAG, "Codec recording mode: " + (enabled ? "ENABLED" : "DISABLED"));
     }
+
+    // 共享 TextureView 模式暂不启用（EGL context 跨线程共享有问题）
+    private boolean useSharedTextureMode = false;
 
     /**
      * 检查是否使用软编码录制模式
@@ -1075,6 +1079,18 @@ public class MultiCameraManager {
             android.view.Surface recordSurface = new android.view.Surface(surfaceTexture);
             camera.setRecordSurface(recordSurface);
 
+            // 【优化】启用双目标渲染：设置预览 Surface
+            // 这样 EGL 会同时渲染到编码器和 TextureView
+            Surface previewSurface = camera.getSurface();
+            if (previewSurface != null && previewSurface.isValid()) {
+                codecRecorder.setPreviewSurface(previewSurface);
+                AppLog.d(TAG, "Dual-target rendering enabled for " + key);
+            }
+
+            // 【优化】启用单一输出模式：Camera 只输出到录制 Surface
+            // 预览由 EGL 双目标渲染提供，不需要 Camera 双路输出
+            camera.setSingleOutputMode(true);
+
             codecRecorders.put(key, codecRecorder);
         }
 
@@ -1217,6 +1233,15 @@ public class MultiCameraManager {
                 recorder.release();
             }
             codecRecorders.clear();
+
+            // 【优化】恢复正常预览模式（禁用单输出模式）
+            for (String key : keys) {
+                SingleCamera camera = cameras.get(key);
+                if (camera != null) {
+                    camera.setSingleOutputMode(false);
+                }
+            }
+            AppLog.d(TAG, "Restored normal preview mode (dual-target disabled)");
         }
 
         // 停止 MediaRecorder 录制

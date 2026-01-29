@@ -138,6 +138,13 @@ public class EglSurfaceEncoder {
     private boolean isInitialized = false;
     private boolean isReleased = false;
 
+    // 【优化】共享 TextureView 模式：不调用 updateTexImage，由 TextureView 管理
+    private boolean sharedTextureMode = false;
+
+    // 【优化】双目标渲染：同时输出到编码器和预览 Surface
+    private Surface previewSurface = null;
+    private EGLSurface previewEglSurface = EGL14.EGL_NO_SURFACE;
+
     // 时间水印相关
     private boolean watermarkEnabled = false;
     private int watermarkProgram;
@@ -154,6 +161,14 @@ public class EglSurfaceEncoder {
     private static final int WATERMARK_WIDTH = 400;   // 水印纹理宽度（需容纳19字符的时间戳）
     private static final int WATERMARK_HEIGHT = 44;   // 水印纹理高度
     private final SimpleDateFormat watermarkDateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
+    
+    // 【优化3】水印更新频率控制
+    private long lastWatermarkUpdateTimeMs = 0;
+    private static final long WATERMARK_UPDATE_INTERVAL_MS = 1000;  // 每秒最多更新一次水印
+    
+    // 【优化3】复用 Paint 对象，避免每帧创建
+    private Paint watermarkShadowPaint;
+    private Paint watermarkTextPaint;
 
     public EglSurfaceEncoder(String cameraId, int width, int height) {
         this.cameraId = cameraId;
@@ -226,6 +241,51 @@ public class EglSurfaceEncoder {
     }
 
     /**
+     * 【优化】设置共享 TextureView 模式
+     * 在此模式下，不调用 updateTexImage()，因为 TextureView 已经处理了
+     */
+    public void setSharedTextureMode(boolean enabled) {
+        this.sharedTextureMode = enabled;
+        AppLog.d(TAG, "Camera " + cameraId + " Shared texture mode: " + (enabled ? "ENABLED" : "DISABLED"));
+    }
+
+    /**
+     * 【优化】设置预览 Surface（用于双目标渲染模式）
+     * 启用后，每帧会同时渲染到编码器和预览 Surface
+     * 这样 Camera 只需要输出到一个 Surface，大幅减少负载
+     * 
+     * @param surface TextureView 的 Surface，传 null 禁用双目标渲染
+     */
+    public void setPreviewSurface(Surface surface) {
+        // 释放旧的预览 EGL Surface
+        if (previewEglSurface != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglDestroySurface(eglDisplay, previewEglSurface);
+            previewEglSurface = EGL14.EGL_NO_SURFACE;
+        }
+
+        this.previewSurface = surface;
+
+        if (surface != null && surface.isValid() && eglDisplay != EGL14.EGL_NO_DISPLAY) {
+            // 创建预览用的 EGL Surface
+            int[] surfaceAttribList = { EGL14.EGL_NONE };
+            previewEglSurface = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, surface, surfaceAttribList, 0);
+            if (previewEglSurface == EGL14.EGL_NO_SURFACE) {
+                AppLog.e(TAG, "Camera " + cameraId + " Failed to create preview EGL surface");
+                previewSurface = null;
+            } else {
+                AppLog.d(TAG, "Camera " + cameraId + " Preview surface set for dual-target rendering");
+            }
+        }
+    }
+
+    /**
+     * 检查是否启用了双目标渲染
+     */
+    public boolean isDualTargetEnabled() {
+        return previewEglSurface != EGL14.EGL_NO_SURFACE;
+    }
+
+    /**
      * 渲染一帧到输出 Surface
      * 应该在 SurfaceTexture.onFrameAvailable 回调中调用
      * @param presentationTimeNs 帧的呈现时间（纳秒）
@@ -241,11 +301,15 @@ public class EglSurfaceEncoder {
         }
 
         try {
-            // 首先绑定 EGL context（必须在 updateTexImage 之前）
+            // 首先绑定 EGL context
             makeCurrent();
 
-            // 更新纹理（需要在正确的 EGL context 中）
-            inputSurfaceTexture.updateTexImage();
+            // 【优化】共享模式下不调用 updateTexImage，因为 TextureView 已经更新了
+            // 但需要获取变换矩阵
+            if (!sharedTextureMode) {
+                // 传统模式：更新纹理
+                inputSurfaceTexture.updateTexImage();
+            }
             inputSurfaceTexture.getTransformMatrix(texMatrix);
 
             // 设置视口
@@ -262,12 +326,54 @@ public class EglSurfaceEncoder {
                 drawFrameWithoutWatermark();
             }
 
-            // 设置呈现时间戳并交换缓冲区
+            // 设置呈现时间戳并交换缓冲区（编码器 Surface）
             EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, presentationTimeNs);
             EGL14.eglSwapBuffers(eglDisplay, eglSurface);
 
+            // 【优化】双目标渲染：同时渲染到预览 Surface
+            if (previewEglSurface != EGL14.EGL_NO_SURFACE) {
+                renderToPreview();
+            }
+
         } catch (Exception e) {
             AppLog.e(TAG, "Camera " + cameraId + " Error drawing frame", e);
+        }
+    }
+
+    /**
+     * 【优化】渲染到预览 Surface（双目标渲染的第二个目标）
+     * 复用已经更新的纹理，只需要切换输出 Surface 重新渲染一次
+     */
+    private void renderToPreview() {
+        try {
+            // 切换到预览 Surface
+            if (!EGL14.eglMakeCurrent(eglDisplay, previewEglSurface, previewEglSurface, eglContext)) {
+                AppLog.e(TAG, "Camera " + cameraId + " Failed to make preview surface current");
+                return;
+            }
+
+            // 设置视口（预览可能是不同尺寸，这里使用相同尺寸简化处理）
+            GLES20.glViewport(0, 0, width, height);
+
+            // 清除颜色缓冲
+            GLES20.glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+
+            // 渲染（不带水印，预览不需要水印）
+            drawFrameWithoutWatermark();
+
+            // 交换缓冲区（预览不需要时间戳）
+            EGL14.eglSwapBuffers(eglDisplay, previewEglSurface);
+
+            // 切回编码器 Surface（重要：恢复状态）
+            EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext);
+
+        } catch (Exception e) {
+            AppLog.e(TAG, "Camera " + cameraId + " Error rendering to preview", e);
+            // 尝试恢复到编码器 Surface
+            try {
+                EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext);
+            } catch (Exception ignored) {}
         }
     }
 
@@ -461,6 +567,17 @@ public class EglSurfaceEncoder {
             watermarkBitmap = null;
         }
 
+        // 【优化3】清理 Paint 对象
+        watermarkShadowPaint = null;
+        watermarkTextPaint = null;
+
+        // 【优化】释放预览 EGL Surface
+        if (previewEglSurface != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglDestroySurface(eglDisplay, previewEglSurface);
+            previewEglSurface = EGL14.EGL_NO_SURFACE;
+        }
+        previewSurface = null;
+
         // 释放 EGL 资源
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
@@ -641,44 +758,60 @@ public class EglSurfaceEncoder {
     }
 
     /**
-     * 更新水印位图（每秒调用一次）
+     * 更新水印位图
+     * 
+     * 【优化3】性能改进：
+     * - 使用时间间隔检查，每秒最多更新一次（而不是每帧都检查）
+     * - 复用 Paint 对象，避免每次更新都创建新对象
+     * - 仅当时间字符串变化时才更新纹理
      */
     private void updateWatermarkBitmap() {
         if (watermarkBitmap == null) {
             return;
         }
 
+        // 【优化3】时间间隔检查：每秒最多更新一次
+        long now = System.currentTimeMillis();
+        if (now - lastWatermarkUpdateTimeMs < WATERMARK_UPDATE_INTERVAL_MS) {
+            return;  // 距离上次更新不到1秒，跳过
+        }
+
         String currentTime = watermarkDateFormat.format(new Date());
         
         // 只有时间变化时才更新
         if (currentTime.equals(lastWatermarkTime)) {
+            lastWatermarkUpdateTimeMs = now;  // 更新检查时间，即使内容没变
             return;
         }
         lastWatermarkTime = currentTime;
+        lastWatermarkUpdateTimeMs = now;
 
         // 清除位图
         watermarkBitmap.eraseColor(Color.TRANSPARENT);
 
         Canvas canvas = new Canvas(watermarkBitmap);
 
-        // 设置画笔 - 阴影
-        Paint shadowPaint = new Paint();
-        shadowPaint.setColor(Color.BLACK);
-        shadowPaint.setTextSize(28);
-        shadowPaint.setAntiAlias(true);
-        shadowPaint.setTypeface(Typeface.MONOSPACE);
+        // 【优化3】复用 Paint 对象
+        if (watermarkShadowPaint == null) {
+            watermarkShadowPaint = new Paint();
+            watermarkShadowPaint.setColor(Color.BLACK);
+            watermarkShadowPaint.setTextSize(28);
+            watermarkShadowPaint.setAntiAlias(true);
+            watermarkShadowPaint.setTypeface(Typeface.MONOSPACE);
+        }
 
-        // 设置画笔 - 主文字
-        Paint textPaint = new Paint();
-        textPaint.setColor(Color.WHITE);
-        textPaint.setTextSize(28);
-        textPaint.setAntiAlias(true);
-        textPaint.setTypeface(Typeface.MONOSPACE);
+        if (watermarkTextPaint == null) {
+            watermarkTextPaint = new Paint();
+            watermarkTextPaint.setColor(Color.WHITE);
+            watermarkTextPaint.setTextSize(28);
+            watermarkTextPaint.setAntiAlias(true);
+            watermarkTextPaint.setTypeface(Typeface.MONOSPACE);
+        }
 
         // 绘制阴影（偏移2像素）
-        canvas.drawText(currentTime, 8, 32, shadowPaint);
+        canvas.drawText(currentTime, 8, 32, watermarkShadowPaint);
         // 绘制主文字
-        canvas.drawText(currentTime, 6, 30, textPaint);
+        canvas.drawText(currentTime, 6, 30, watermarkTextPaint);
 
         // 上传纹理到 GPU
         if (watermarkTextureId != 0) {

@@ -287,6 +287,25 @@ public class SingleCamera {
     }
 
     /**
+     * 获取 TextureView 的 SurfaceTexture
+     * 用于共享 TextureView 模式下的 Codec 录制
+     */
+    public SurfaceTexture getTextureViewSurfaceTexture() {
+        if (textureView != null && textureView.isAvailable()) {
+            return textureView.getSurfaceTexture();
+        }
+        return null;
+    }
+
+    /**
+     * 获取 TextureView 引用
+     * 用于设置 SurfaceTextureListener 以支持共享 TextureView 模式
+     */
+    public TextureView getTextureView() {
+        return textureView;
+    }
+
+    /**
      * 选择最优分辨率
      * 根据用户配置的目标分辨率进行匹配：
      * - 默认：优先1280x800，否则最接近的
