@@ -35,7 +35,9 @@ public class MultiCameraManager {
     private final Context context;
     private final Map<String, SingleCamera> cameras = new LinkedHashMap<>();
     private final Map<String, VideoRecorder> recorders = new LinkedHashMap<>();
-    private final Map<String, CodecVideoRecorder> codecRecorders = new LinkedHashMap<>();  // 软编码录制器
+    private final Map<String, CodecVideoRecorder> codecRecorders = new LinkedHashMap<>();  // 旧版软编码录制器（保留兼容）
+    private final Map<String, OptimizedCodecRecorder> optimizedRecorders = new LinkedHashMap<>();  // 【优化】新版高性能录制器
+    private boolean useOptimizedRecorder = true;  // 默认使用优化版录制器
     private final List<String> activeCameraKeys = new ArrayList<>();
     private int maxOpenCameras = DEFAULT_MAX_OPEN_CAMERAS;
 
@@ -944,11 +946,15 @@ public class MultiCameraManager {
         int targetFrameRate = appConfig.getActualFrameRate(30);
         AppLog.d(TAG, "Codec target frame rate: " + targetFrameRate + " fps (level: " + appConfig.getFramerateLevel() + ")");
 
-        // 清理之前的软编码录制器
+        // 清理之前的录制器
         for (CodecVideoRecorder recorder : codecRecorders.values()) {
             recorder.release();
         }
         codecRecorders.clear();
+        for (OptimizedCodecRecorder recorder : optimizedRecorders.values()) {
+            recorder.release();
+        }
+        optimizedRecorders.clear();
 
         // 为每个摄像头创建软编码录制器并准备
         boolean prepareSuccess = true;
@@ -1166,6 +1172,221 @@ public class MultiCameraManager {
         mainHandler.postDelayed(sessionTimeoutRunnable, 3000);
 
         return true;
+    }
+
+    /**
+     * 【优化方案】使用高性能录制器准备录制
+     */
+    private boolean prepareOptimizedRecorder(String key, SingleCamera camera, Size previewSize,
+            int bitrate, int frameRate, long segmentDurationMs, String path, AppConfig appConfig) {
+        
+        AppLog.d(TAG, "Preparing OPTIMIZED codec recorder for " + key);
+
+        // 创建高性能录制器
+        OptimizedCodecRecorder recorder = new OptimizedCodecRecorder(
+                camera.getCameraId(),
+                previewSize.getWidth(),
+                previewSize.getHeight()
+        );
+
+        // 设置录制参数
+        recorder.setSegmentDuration(segmentDurationMs);
+        recorder.setBitRate(bitrate);
+        recorder.setFrameRate(frameRate);
+        recorder.setWatermarkEnabled(appConfig.isTimestampWatermarkEnabled());
+
+        // 设置预览 Surface（启用双目标渲染）
+        Surface previewSurface = camera.getSurface();
+        if (previewSurface != null && previewSurface.isValid()) {
+            recorder.setPreviewSurface(previewSurface);
+            AppLog.d(TAG, "Dual-target rendering enabled for " + key);
+        }
+
+        // 设置回调
+        recorder.setCallback(new RecordCallback() {
+            @Override
+            public void onRecordStart(String cameraId) {
+                AppLog.d(TAG, "Optimized recording started for camera " + cameraId);
+            }
+
+            @Override
+            public void onRecordStop(String cameraId) {
+                AppLog.d(TAG, "Optimized recording stopped for camera " + cameraId);
+            }
+
+            @Override
+            public void onRecordError(String cameraId, String error) {
+                AppLog.e(TAG, "Optimized recording error for camera " + cameraId + ": " + error);
+            }
+
+            @Override
+            public void onPrepareSegmentSwitch(String cameraId, int currentSegmentIndex) {
+                // 优化版录制器自动处理
+            }
+
+            @Override
+            public void onSegmentSwitch(String cameraId, int newSegmentIndex, String completedFilePath) {
+                AppLog.d(TAG, "Optimized segment switch for " + cameraId + " to segment " + newSegmentIndex);
+                
+                if (useRelayWrite && finalSaveDir != null && newSegmentIndex > 0 && completedFilePath != null) {
+                    scheduleRelayTransfer(completedFilePath);
+                }
+                
+                if (segmentSwitchCallback != null && newSegmentIndex > lastNotifiedSegmentIndex) {
+                    lastNotifiedSegmentIndex = newSegmentIndex;
+                    segmentSwitchCallback.onSegmentSwitch(newSegmentIndex);
+                }
+            }
+
+            @Override
+            public void onCorruptedFilesDeleted(String cameraId, List<String> deletedFiles) {
+                if (deletedFiles != null && !deletedFiles.isEmpty() && corruptedFilesCallback != null) {
+                    mainHandler.post(() -> corruptedFilesCallback.onCorruptedFilesDeleted(deletedFiles));
+                }
+            }
+
+            @Override
+            public void onRecordingRebuildRequested(String cameraId, String reason) {
+                AppLog.e(TAG, "Optimized recording rebuild requested: " + reason);
+            }
+
+            @Override
+            public void onFirstDataWritten(String cameraId) {
+                AppLog.d(TAG, "Optimized first data written for " + cameraId);
+                if (!hasNotifiedFirstDataWritten && firstDataWrittenCallback != null) {
+                    hasNotifiedFirstDataWritten = true;
+                    mainHandler.post(() -> firstDataWrittenCallback.onFirstDataWritten());
+                }
+            }
+        });
+
+        // 准备录制
+        android.graphics.SurfaceTexture surfaceTexture = recorder.prepareRecording(path);
+        if (surfaceTexture == null) {
+            AppLog.e(TAG, "Failed to prepare optimized recording for " + key);
+            recorder.release();
+            return false;
+        }
+
+        // Camera 设置
+        android.view.Surface recordSurface = new android.view.Surface(surfaceTexture);
+        camera.setRecordSurface(recordSurface);
+        camera.setSingleOutputMode(true);  // 【关键】Camera 单路输出
+
+        optimizedRecorders.put(key, recorder);
+        AppLog.d(TAG, "Optimized recorder prepared for " + key);
+        return true;
+    }
+
+    /**
+     * 【兼容方案】使用旧版录制器准备录制
+     */
+    private boolean prepareLegacyRecorder(String key, SingleCamera camera, Size previewSize,
+            int bitrate, int frameRate, long segmentDurationMs, String path, AppConfig appConfig) {
+        
+        AppLog.d(TAG, ">>> prepareLegacyRecorder START for " + key);
+
+        // 创建旧版录制器
+        CodecVideoRecorder codecRecorder = new CodecVideoRecorder(
+                camera.getCameraId(),
+                previewSize.getWidth(),
+                previewSize.getHeight()
+        );
+
+        // 设置录制参数
+        codecRecorder.setSegmentDuration(segmentDurationMs);
+        codecRecorder.setBitRate(bitrate);
+        codecRecorder.setFrameRate(frameRate);
+        codecRecorder.setWatermarkEnabled(appConfig.isTimestampWatermarkEnabled());
+
+        // 设置回调
+        codecRecorder.setCallback(new RecordCallback() {
+            @Override
+            public void onRecordStart(String cameraId) {
+                AppLog.d(TAG, "Legacy recording started for camera " + cameraId);
+            }
+
+            @Override
+            public void onRecordStop(String cameraId) {
+                AppLog.d(TAG, "Legacy recording stopped for camera " + cameraId);
+            }
+
+            @Override
+            public void onRecordError(String cameraId, String error) {
+                AppLog.e(TAG, "Legacy recording error for camera " + cameraId + ": " + error);
+            }
+
+            @Override
+            public void onPrepareSegmentSwitch(String cameraId, int currentSegmentIndex) {
+                // 旧版处理
+            }
+
+            @Override
+            public void onSegmentSwitch(String cameraId, int newSegmentIndex, String completedFilePath) {
+                AppLog.d(TAG, "Legacy segment switch for " + cameraId + " to segment " + newSegmentIndex);
+                
+                if (useRelayWrite && finalSaveDir != null && newSegmentIndex > 0 && completedFilePath != null) {
+                    scheduleRelayTransfer(completedFilePath);
+                }
+                
+                if (segmentSwitchCallback != null && newSegmentIndex > lastNotifiedSegmentIndex) {
+                    lastNotifiedSegmentIndex = newSegmentIndex;
+                    segmentSwitchCallback.onSegmentSwitch(newSegmentIndex);
+                }
+            }
+
+            @Override
+            public void onCorruptedFilesDeleted(String cameraId, List<String> deletedFiles) {
+                if (deletedFiles != null && !deletedFiles.isEmpty() && corruptedFilesCallback != null) {
+                    mainHandler.post(() -> corruptedFilesCallback.onCorruptedFilesDeleted(deletedFiles));
+                }
+            }
+
+            @Override
+            public void onRecordingRebuildRequested(String cameraId, String reason) {
+                AppLog.e(TAG, "Legacy recording rebuild requested: " + reason);
+            }
+
+            @Override
+            public void onFirstDataWritten(String cameraId) {
+                AppLog.d(TAG, "Legacy first data written for " + cameraId);
+                if (!hasNotifiedFirstDataWritten && firstDataWrittenCallback != null) {
+                    hasNotifiedFirstDataWritten = true;
+                    mainHandler.post(() -> firstDataWrittenCallback.onFirstDataWritten());
+                }
+            }
+        });
+
+        // 准备录制
+        android.graphics.SurfaceTexture surfaceTexture = codecRecorder.prepareRecording(path);
+        if (surfaceTexture == null) {
+            AppLog.e(TAG, "Failed to prepare legacy recording for " + key);
+            codecRecorder.release();
+            return false;
+        }
+
+        // Camera 设置
+        android.view.Surface recordSurface = new android.view.Surface(surfaceTexture);
+        camera.setRecordSurface(recordSurface);
+
+        // 启用双目标渲染
+        Surface previewSurface = camera.getSurface();
+        if (previewSurface != null && previewSurface.isValid()) {
+            codecRecorder.setPreviewSurface(previewSurface);
+        }
+        camera.setSingleOutputMode(true);
+
+        codecRecorders.put(key, codecRecorder);
+        return true;
+    }
+
+    /**
+     * 设置是否使用优化版录制器
+     * @param enabled true 使用优化版，false 使用旧版
+     */
+    public void setUseOptimizedRecorder(boolean enabled) {
+        this.useOptimizedRecorder = enabled;
+        AppLog.d(TAG, "Use optimized recorder: " + enabled);
     }
 
     /**
