@@ -35,4 +35,15 @@
 
     <!-- 多选模式选中背景 - 夜间模式 -->
     <color name="item_selected_background">#40FFFFFF</color>
+
+    <!-- 使用提示对话框配色 - 夜间模式 -->
+    <color name="dialog_guide_background">#2A2A2A</color>
+    <color name="dialog_guide_title">#FFFFFF</color>
+    <color name="dialog_guide_content">#E0E0E0</color>
+    <color name="dialog_guide_accent">#64B5F6</color>
+    <color name="dialog_guide_secondary">#AAAAAA</color>
+    <color name="dialog_guide_divider">#424242</color>
+    <color name="dialog_guide_button_bg">#64B5F6</color>
+    <color name="dialog_guide_button_text">#000000</color>
+    <color name="dialog_guide_button_ripple">#30FFFFFF</color>
 </resources>

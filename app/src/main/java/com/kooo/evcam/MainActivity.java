@@ -91,8 +91,17 @@ public class MainActivity extends AppCompatActivity {
     // 防双击保护
     private long lastRecordButtonClickTime = 0;  // 上次点击录制按钮的时间
     private static final long RECORD_BUTTON_CLICK_INTERVAL = 1000;  // 最小点击间隔（1秒）
+    
+    // 录制异常提示防抖
+    private long lastRecordingErrorToastTime = 0;  // 上次显示录制异常提示的时间
+    private static final long RECORDING_ERROR_TOAST_INTERVAL = 20000;  // 最小显示间隔（20秒）
     private boolean shouldMoveToBackgroundOnReady = false;  // 开机自启动后，窗口准备好时移到后台
     private boolean autoStartRecordingTriggered = false;  // 标记自动录制是否已触发（避免重复触发）
+    
+    // 主题切换后恢复录制相关
+    private boolean shouldResumeRecordingAfterRecreate = false;  // 主题切换后是否需要恢复录制
+    private long savedRecordingStartTime = 0;  // 保存的录制开始时间（用于计时器恢复）
+    private int savedSegmentCount = 1;  // 保存的分段数
     
     // 息屏录制相关
     private android.content.BroadcastReceiver screenStateReceiver;  // 屏幕状态广播接收器
@@ -174,6 +183,17 @@ public class MainActivity extends AppCompatActivity {
 
         initViews();
         setupNavigationDrawer();
+
+        // 检查是否需要在主题切换后恢复录制
+        if (savedInstanceState != null) {
+            boolean wasRecording = savedInstanceState.getBoolean("wasRecording", false);
+            if (wasRecording) {
+                shouldResumeRecordingAfterRecreate = true;
+                savedRecordingStartTime = savedInstanceState.getLong("recordingStartTime", 0);
+                savedSegmentCount = savedInstanceState.getInt("segmentCount", 1);
+                AppLog.d(TAG, "onCreate: 检测到主题切换，需要恢复录制 - savedStartTime=" + savedRecordingStartTime + ", savedSegment=" + savedSegmentCount);
+            }
+        }
 
         // 检查是否首次启动
         checkFirstLaunch();
@@ -762,8 +782,25 @@ public class MainActivity extends AppCompatActivity {
      * 开始录制计时器
      */
     private void startRecordingTimer() {
-        recordingStartTime = System.currentTimeMillis();
-        currentSegmentCount = 1;
+        startRecordingTimer(0, 1);  // 使用默认值，从头开始计时
+    }
+    
+    /**
+     * 开始录制计时器（支持恢复）
+     * @param savedStartTime 保存的开始时间（0表示从当前时间开始）
+     * @param savedSegment 保存的分段数
+     */
+    private void startRecordingTimer(long savedStartTime, int savedSegment) {
+        if (savedStartTime > 0) {
+            // 恢复模式：使用保存的开始时间
+            recordingStartTime = savedStartTime;
+            currentSegmentCount = savedSegment;
+            AppLog.d(TAG, "恢复录制计时器 - startTime=" + savedStartTime + ", segment=" + savedSegment);
+        } else {
+            // 新录制：使用当前时间
+            recordingStartTime = System.currentTimeMillis();
+            currentSegmentCount = 1;
+        }
         
         if (tvRecordingStats != null) {
             // 始终设为 VISIBLE，通过 alpha 控制可见性
@@ -1220,6 +1257,15 @@ public class MainActivity extends AppCompatActivity {
             });
         });
 
+        // 设置录制时间戳更新回调
+        // 当 Watchdog 触发重建录制时，时间戳会改变，需要更新以便正确查找视频文件
+        cameraManager.setTimestampUpdateCallback(newTimestamp -> {
+            if (isRemoteRecording && remoteRecordingTimestamp != null) {
+                AppLog.d(TAG, "远程录制时间戳更新: " + remoteRecordingTimestamp + " -> " + newTimestamp);
+                remoteRecordingTimestamp = newTimestamp;
+            }
+        });
+
         // 设置首次数据写入回调
         // 用于在摄像头真正开始输出数据后启动计时器（分段计时、钉钉录制计时等）
         cameraManager.setFirstDataWrittenCallback(() -> {
@@ -1235,8 +1281,19 @@ public class MainActivity extends AppCompatActivity {
                 // 启动录制计时器（从首次写入开始计时，而不是从录制请求开始）
                 // 这样右上角显示的时间是"有效录制时长"
                 if (isRecording && !isRemoteRecording) {
-                    startRecordingTimer();
-                    AppLog.d(TAG, "手动录制计时器已启动（首次写入后）");
+                    // 检查是否是主题切换后恢复的录制
+                    if (shouldResumeRecordingAfterRecreate && savedRecordingStartTime > 0) {
+                        // 使用保存的时间恢复计时器（计时不重置）
+                        startRecordingTimer(savedRecordingStartTime, savedSegmentCount);
+                        AppLog.d(TAG, "主题切换后恢复录制计时器（首次写入后）");
+                        // 重置恢复标志
+                        shouldResumeRecordingAfterRecreate = false;
+                        savedRecordingStartTime = 0;
+                        savedSegmentCount = 1;
+                    } else {
+                        startRecordingTimer();
+                        AppLog.d(TAG, "手动录制计时器已启动（首次写入后）");
+                    }
                 }
                 
                 // 如果是远程录制，现在才启动定时器
@@ -1455,6 +1512,9 @@ public class MainActivity extends AppCompatActivity {
 
                 AppLog.d(TAG, "Camera initialized with " + configuredCameraCount + " cameras");
                 //Toast.makeText(this, "已打开 " + configuredCameraCount + " 个摄像头", Toast.LENGTH_SHORT).show();
+                
+                // 检查是否需要恢复录制（主题切换后），优先级高于自动录制
+                checkResumeRecordingAfterRecreate();
                 
                 // 检查并触发自动录制（延迟执行，确保摄像头准备就绪）
                 checkAutoStartRecording();
@@ -1752,10 +1812,54 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
+     * 检查是否需要在主题切换后恢复录制
+     * 在摄像头初始化完成后调用，如果之前正在录制（非钉钉指令），则自动恢复录制
+     */
+    private void checkResumeRecordingAfterRecreate() {
+        if (!shouldResumeRecordingAfterRecreate) {
+            return;
+        }
+        
+        AppLog.d(TAG, "检测到需要恢复录制（主题切换后），将在2秒后自动恢复...");
+        
+        // 延迟2秒后恢复录制，确保所有摄像头都已准备就绪
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            // 再次检查是否已经在录制（可能用户手动开始了）
+            if (isRecording) {
+                AppLog.d(TAG, "已在录制中，跳过恢复录制");
+                shouldResumeRecordingAfterRecreate = false;
+                return;
+            }
+            
+            // 检查摄像头是否就绪
+            if (cameraManager == null || !cameraManager.hasConnectedCameras()) {
+                AppLog.w(TAG, "摄像头未就绪，无法恢复录制");
+                Toast.makeText(this, "摄像头未就绪，恢复录制失败", Toast.LENGTH_SHORT).show();
+                shouldResumeRecordingAfterRecreate = false;
+                savedRecordingStartTime = 0;
+                savedSegmentCount = 1;
+                return;
+            }
+            
+            AppLog.d(TAG, "主题切换后自动恢复录制...");
+            startRecording();
+            Toast.makeText(this, "已自动恢复录制", Toast.LENGTH_SHORT).show();
+            // 注意：shouldResumeRecordingAfterRecreate 在首次数据写入回调中重置，
+            // 以便计时器使用保存的时间
+        }, 2000);  // 延迟2秒
+    }
+    
+    /**
      * 检查并触发自动录制
      * 在摄像头初始化完成后调用，如果用户启用了"启动自动录制"则自动开始录制
      */
     private void checkAutoStartRecording() {
+        // 如果正在恢复录制（主题切换后），跳过自动录制
+        if (shouldResumeRecordingAfterRecreate) {
+            AppLog.d(TAG, "正在恢复录制，跳过自动录制检查");
+            return;
+        }
+        
         // 避免重复触发
         if (autoStartRecordingTriggered) {
             AppLog.d(TAG, "自动录制已触发过，跳过");
@@ -2076,7 +2180,6 @@ public class MainActivity extends AppCompatActivity {
         
         screenStateHandler.postDelayed(screenOnStartRunnable, SCREEN_ON_DELAY_MS);
     }
-    
     /**
      * 切换录制状态（开始/停止）
      */
@@ -2260,13 +2363,13 @@ public class MainActivity extends AppCompatActivity {
 
     /**
      * 显示准备中状态
-     * 按钮变为绿色（不闪烁），表示录制正在初始化
+     * 按钮变为暗绿色（不闪烁），表示录制正在初始化
      */
     private void showPreparingIndicator() {
         if (btnStartRecord != null) {
-            // 设置按钮为绿色（不闪烁），表示准备中
-            btnStartRecord.setTextColor(0xFF00FF00);  // 绿色
-            AppLog.d(TAG, "进入准备中状态：绿色（不闪烁）");
+            // 设置按钮为暗绿色（不闪烁），表示准备中
+            btnStartRecord.setTextColor(0xFF006400);  // 暗绿色
+            AppLog.d(TAG, "进入准备中状态：暗绿色（不闪烁）");
         }
     }
 
@@ -2586,6 +2689,12 @@ public class MainActivity extends AppCompatActivity {
                     }
                     
                     sendErrorToRemote("上传失败: " + error);
+                    
+                    // 如果是 413 错误（文件太大），额外发送提示
+                    if (error.contains("413")) {
+                        sendErrorToRemote("提示：钉钉限制上传文件不能超过20MB，该文件大小已超出，可能会上传失败。");
+                    }
+                    
                     // 即使失败也退回后台
                     runOnUiThread(() -> returnToBackgroundIfRemoteWakeUp());
                 }
@@ -3091,6 +3200,22 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+        
+        // 保存录制状态（用于主题切换后恢复）
+        // 注意：只保存非远程录制的状态，远程录制（钉钉指令）不自动恢复
+        if (isRecording && !isRemoteRecording) {
+            outState.putBoolean("wasRecording", true);
+            outState.putLong("recordingStartTime", recordingStartTime);
+            outState.putInt("segmentCount", currentSegmentCount);
+            AppLog.d(TAG, "onSaveInstanceState: 保存录制状态 - startTime=" + recordingStartTime + ", segment=" + currentSegmentCount);
+        } else {
+            outState.putBoolean("wasRecording", false);
+        }
+    }
+
+    @Override
     protected void onPause() {
         super.onPause();
         isInBackground = true;
@@ -3280,17 +3405,26 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * 显示损坏文件已删除的提示（自动消失）
+     * 显示录制异常的提示（自动消失，每20秒最多显示一次）
      */
     private void showCorruptedFilesDeletedDialog(List<String> deletedFiles) {
         if (deletedFiles == null || deletedFiles.isEmpty()) {
             return;
         }
 
+        // 记录日志（始终记录）
+        AppLog.w(TAG, "Recording error, deleted " + deletedFiles.size() + " corrupted files: " + deletedFiles);
+
+        // 检查是否可以显示 Toast（20秒内只显示一次）
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lastRecordingErrorToastTime < RECORDING_ERROR_TOAST_INTERVAL) {
+            AppLog.d(TAG, "Recording error toast suppressed (rate limited)");
+            return;
+        }
+        lastRecordingErrorToastTime = currentTime;
+
         runOnUiThread(() -> {
-            String message = "已清理 " + deletedFiles.size() + " 个异常视频文件";
-            android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show();
-            AppLog.w(TAG, "Showed corrupted files toast: " + deletedFiles.size() + " files - " + deletedFiles);
+            android.widget.Toast.makeText(this, "录制发生异常", android.widget.Toast.LENGTH_LONG).show();
         });
     }
 

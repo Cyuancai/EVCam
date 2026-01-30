@@ -228,6 +228,9 @@ public class SingleCamera {
         return singleOutputMode;
     }
 
+    // 当前录制模式（用于调试模式区分）
+    private boolean isCodecRecording = false;
+
     /**
      * 设置录制Surface
      */
@@ -235,6 +238,22 @@ public class SingleCamera {
         this.recordSurface = surface;
         if (surface != null) {
             AppLog.d(TAG, "Record surface set for camera " + cameraId + ": " + surface + ", isValid=" + surface.isValid());
+        } else {
+            AppLog.w(TAG, "Record surface set to NULL for camera " + cameraId);
+        }
+    }
+
+    /**
+     * 设置录制Surface（带模式标识）
+     * @param surface 录制Surface
+     * @param isCodec true 表示 Codec 模式，false 表示 MediaRecorder 模式
+     */
+    public void setRecordSurface(Surface surface, boolean isCodec) {
+        this.recordSurface = surface;
+        this.isCodecRecording = isCodec;
+        if (surface != null) {
+            AppLog.d(TAG, "Record surface set for camera " + cameraId + ": " + surface + 
+                    ", isValid=" + surface.isValid() + ", mode=" + (isCodec ? "Codec" : "MediaRecorder"));
         } else {
             AppLog.w(TAG, "Record surface set to NULL for camera " + cameraId);
         }
@@ -904,7 +923,7 @@ public class SingleCamera {
 
                 // 如果有录制Surface且不是单一输出模式，也添加到输出目标
                 if (recordSurface != null) {
-                    // 诊断：检查 recordSurface 有效性
+                    // 检查 recordSurface 有效性
                     boolean isValid = recordSurface.isValid();
                     AppLog.d(TAG, "Camera " + cameraId + " recordSurface check: " + recordSurface + ", isValid=" + isValid);
                     
@@ -939,6 +958,19 @@ public class SingleCamera {
                     AppLog.d(TAG, "Camera " + cameraId + " Session configured!");
                     if (cameraDevice == null) {
                         AppLog.e(TAG, "Camera " + cameraId + " cameraDevice is null in onConfigured");
+                        return;
+                    }
+
+                    // 【关键】检查 session 是否仍然有效
+                    // 如果在回调执行前 recreateSession() 被再次调用，当前 session 可能已被关闭
+                    // 在这种情况下，captureSession 可能已经被设置为 null 或新的 session
+                    if (captureSession != null && captureSession != session) {
+                        AppLog.w(TAG, "Camera " + cameraId + " Session already replaced by newer session, ignoring this callback");
+                        try {
+                            session.close();
+                        } catch (Exception e) {
+                            // 忽略关闭异常
+                        }
                         return;
                     }
 
@@ -985,6 +1017,13 @@ public class SingleCamera {
 
                         // 开始预览
                         AppLog.d(TAG, "Camera " + cameraId + " Setting repeating request...");
+                        
+                        // 再次检查 session 是否仍然有效（防止并发 recreateSession 导致的竞态）
+                        if (captureSession != session) {
+                            AppLog.w(TAG, "Camera " + cameraId + " Session changed before setRepeatingRequest, aborting");
+                            return;
+                        }
+                        
                         captureSession.setRepeatingRequest(previewRequestBuilder.build(), captureCallback, backgroundHandler);
 
                         AppLog.d(TAG, "Camera " + cameraId + " preview started successfully!");
@@ -993,6 +1032,9 @@ public class SingleCamera {
                         }
                     } catch (CameraAccessException e) {
                         AppLog.e(TAG, "Failed to start preview for camera " + cameraId, e);
+                    } catch (IllegalStateException e) {
+                        // Session 可能在设置 repeating request 前被关闭
+                        AppLog.w(TAG, "Camera " + cameraId + " Session closed before setRepeatingRequest: " + e.getMessage());
                     }
                 }
 

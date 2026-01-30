@@ -44,4 +44,15 @@
 
     <!-- 多选模式选中背景 - 日间模式 -->
     <color name="item_selected_background">#40000000</color>
+
+    <!-- 使用提示对话框配色 - 日间模式 -->
+    <color name="dialog_guide_background">#FFFFFF</color>
+    <color name="dialog_guide_title">#1A1A1A</color>
+    <color name="dialog_guide_content">#333333</color>
+    <color name="dialog_guide_accent">#1976D2</color>
+    <color name="dialog_guide_secondary">#666666</color>
+    <color name="dialog_guide_divider">#E0E0E0</color>
+    <color name="dialog_guide_button_bg">#1976D2</color>
+    <color name="dialog_guide_button_text">#FFFFFF</color>
+    <color name="dialog_guide_button_ripple">#30000000</color>
 </resources>
