@@ -570,6 +570,22 @@ public class MainActivity extends AppCompatActivity {
         navigationView = findViewById(R.id.nav_view);
         recordingLayout = findViewById(R.id.main);
         fragmentContainer = findViewById(R.id.fragment_container);
+        
+        // 设置导航头部版本号
+        if (navigationView != null) {
+            View headerView = navigationView.getHeaderView(0);
+            if (headerView != null) {
+                TextView versionText = headerView.findViewById(R.id.nav_header_version);
+                if (versionText != null) {
+                    try {
+                        String versionName = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+                        versionText.setText("版本：v" + versionName);
+                    } catch (Exception e) {
+                        // 忽略异常，保持默认文本
+                    }
+                }
+            }
+        }
 
         // 根据布局获取TextureView（不同布局有不同数量的TextureView）
         textureFront = findViewById(R.id.texture_front);
