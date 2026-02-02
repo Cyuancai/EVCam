@@ -11,7 +11,10 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:padding="8dp"
+        android:paddingTop="15dp"
+        android:paddingBottom="8dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
         android:gravity="center_vertical"
         android:baselineAligned="false"
         android:background="@color/menu_background">
@@ -22,7 +25,7 @@
             android:layout_height="wrap_content"
             android:layout_gravity="center_vertical"
             android:text="←"
-            android:textSize="18sp"
+            android:textSize="20sp"
             android:minWidth="48dp"
             android:minHeight="48dp"
             android:layout_marginEnd="8dp"
@@ -36,7 +39,7 @@
             android:layout_gravity="center_vertical"
             android:text="权限设置"
             android:textColor="@color/text_primary"
-            android:textSize="28sp"
+            android:textSize="24sp"
             android:textStyle="bold" />
     </LinearLayout>
 

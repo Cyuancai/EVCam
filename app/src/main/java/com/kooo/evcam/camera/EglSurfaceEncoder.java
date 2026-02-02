@@ -435,12 +435,11 @@ public class EglSurfaceEncoder {
         GLES20.glUniformMatrix4fv(watermarkMvpMatrixHandle, 1, false, mvpMatrix, 0);
         GLES20.glUniformMatrix4fv(watermarkTexMatrixHandle, 1, false, texMatrix, 0);
 
-        // 设置水印位置和大小（归一化坐标，左上角）
-        // 水印位置：左上角偏移一点，宽度约为视频宽度的25%
-        float watermarkX = 0.01f;  // 左边距 1%
-        float watermarkY = 0.01f;  // 上边距 1%
+        // 设置水印位置和大小（归一化坐标，右上角）
         float watermarkW = (float) WATERMARK_WIDTH / width;   // 水印宽度占比
         float watermarkH = (float) WATERMARK_HEIGHT / height; // 水印高度占比
+        float watermarkX = 1.0f - watermarkW - 0.01f;  // 右边距 1%
+        float watermarkY = 0.01f;  // 上边距 1%
         GLES20.glUniform4f(watermarkRectHandle, watermarkX, watermarkY, watermarkW, watermarkH);
 
         // 设置顶点属性

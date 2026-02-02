@@ -12,7 +12,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent">
 
-        <!-- 银河L7-多按钮 4摄像头录制界面（竖屏四宫格，顶部多功能按钮） -->
+        <!-- 银河L7-多按钮 4摄像头录制界面（竖屏四宫格，底部多功能按钮） -->
         <LinearLayout
             android:id="@+id/main"
             android:layout_width="match_parent"
@@ -20,145 +20,13 @@
             android:orientation="vertical"
             android:background="@color/menu_background">
 
-            <!-- 按钮区域（顶部，横向6个文字按钮 + 2个隐藏按钮，饱满排列） -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:paddingTop="8dp"
-                android:paddingBottom="8dp"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp">
-
-                <Button
-                    android:id="@+id/btn_start_record"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginStart="5dp"
-                    android:layout_marginEnd="5dp"
-                    android:text="录像"
-                    android:textSize="26sp"
-                    android:textStyle="bold"
-                    android:textColor="#FF0000"
-                    android:backgroundTint="@color/button_background"
-                    android:gravity="center"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:minHeight="120dp"
-                    app:cornerRadius="12dp" />
-
-                <Button
-                    android:id="@+id/btn_take_photo"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginStart="5dp"
-                    android:layout_marginEnd="5dp"
-                    android:text="拍照"
-                    android:textSize="26sp"
-                    android:textStyle="bold"
-                    android:textColor="@color/button_text"
-                    android:backgroundTint="@color/button_background"
-                    android:gravity="center"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:minHeight="120dp"
-                    app:cornerRadius="12dp" />
-
-                <Button
-                    android:id="@+id/btn_video_playback"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginStart="5dp"
-                    android:layout_marginEnd="5dp"
-                    android:text="回放"
-                    android:textSize="26sp"
-                    android:textStyle="bold"
-                    android:textColor="@color/button_text"
-                    android:backgroundTint="@color/button_background"
-                    android:gravity="center"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:minHeight="120dp"
-                    app:cornerRadius="12dp" />
-
-                <Button
-                    android:id="@+id/btn_photo_playback"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginStart="5dp"
-                    android:layout_marginEnd="5dp"
-                    android:text="图片"
-                    android:textSize="26sp"
-                    android:textStyle="bold"
-                    android:textColor="@color/button_text"
-                    android:backgroundTint="@color/button_background"
-                    android:gravity="center"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:minHeight="120dp"
-                    app:cornerRadius="12dp" />
-
-                <Button
-                    android:id="@+id/btn_settings"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginStart="5dp"
-                    android:layout_marginEnd="5dp"
-                    android:text="设置"
-                    android:textSize="26sp"
-                    android:textStyle="bold"
-                    android:textColor="@color/button_text"
-                    android:backgroundTint="@color/button_background"
-                    android:gravity="center"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:minHeight="120dp"
-                    app:cornerRadius="12dp" />
-
-                <Button
-                    android:id="@+id/btn_exit"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginStart="5dp"
-                    android:layout_marginEnd="5dp"
-                    android:text="关闭"
-                    android:textSize="26sp"
-                    android:textStyle="bold"
-                    android:textColor="@color/button_text"
-                    android:backgroundTint="@color/button_background"
-                    android:gravity="center"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:minHeight="120dp"
-                    app:cornerRadius="12dp" />
-
-                <!-- 隐藏按钮：保留给其他机型使用，不显示 -->
-                <Button
-                    android:id="@+id/btn_menu"
-                    android:layout_width="0dp"
-                    android:layout_height="0dp"
-                    android:visibility="gone" />
-
-                <Button
-                    android:id="@+id/btn_remote_view"
-                    android:layout_width="0dp"
-                    android:layout_height="0dp"
-                    android:visibility="gone" />
-            </LinearLayout>
-
             <!-- 摄像头预览区域（四宫格 2x2，前后16:10，左右10:16） -->
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
                 android:layout_weight="1"
-                android:paddingTop="4dp"
-                android:paddingBottom="8dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="2dp"
                 android:paddingStart="8dp"
                 android:paddingEnd="8dp">
 
@@ -299,27 +167,162 @@
                 </FrameLayout>
 
             </androidx.constraintlayout.widget.ConstraintLayout>
+
+            <!-- 录制状态显示（录像按钮上方居中） -->
+            <TextView
+                android:id="@+id/tv_recording_stats"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:layout_marginBottom="4dp"
+                android:layout_marginStart="8dp"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/camera_label_background"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:text="正在录制 00:00 / 1"
+                android:textColor="#FF0000"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:gravity="center"
+                android:visibility="gone" />
+
+            <!-- 按钮区域（底部，横向6个文字按钮 + 2个隐藏按钮，饱满排列） -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingTop="0dp"
+                android:paddingBottom="8dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp">
+
+                <Button
+                    android:id="@+id/btn_start_record"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="5dp"
+                    android:layout_marginEnd="5dp"
+                    android:text="录像"
+                    android:textSize="26sp"
+                    android:textStyle="bold"
+                    android:textColor="#FF0000"
+                    android:backgroundTint="@color/button_background"
+                    android:gravity="center"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:minHeight="120dp"
+                    app:cornerRadius="12dp" />
+
+                <Button
+                    android:id="@+id/btn_take_photo"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="5dp"
+                    android:layout_marginEnd="5dp"
+                    android:text="拍照"
+                    android:textSize="26sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/button_text"
+                    android:backgroundTint="@color/button_background"
+                    android:gravity="center"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:minHeight="120dp"
+                    app:cornerRadius="12dp" />
+
+                <Button
+                    android:id="@+id/btn_video_playback"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="5dp"
+                    android:layout_marginEnd="5dp"
+                    android:text="回放"
+                    android:textSize="26sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/button_text"
+                    android:backgroundTint="@color/button_background"
+                    android:gravity="center"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:minHeight="120dp"
+                    app:cornerRadius="12dp" />
+
+                <Button
+                    android:id="@+id/btn_photo_playback"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="5dp"
+                    android:layout_marginEnd="5dp"
+                    android:text="图片"
+                    android:textSize="26sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/button_text"
+                    android:backgroundTint="@color/button_background"
+                    android:gravity="center"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:minHeight="120dp"
+                    app:cornerRadius="12dp" />
+
+                <Button
+                    android:id="@+id/btn_settings"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="5dp"
+                    android:layout_marginEnd="5dp"
+                    android:text="设置"
+                    android:textSize="26sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/button_text"
+                    android:backgroundTint="@color/button_background"
+                    android:gravity="center"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:minHeight="120dp"
+                    app:cornerRadius="12dp" />
+
+                <Button
+                    android:id="@+id/btn_exit"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="5dp"
+                    android:layout_marginEnd="5dp"
+                    android:text="关闭"
+                    android:textSize="26sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/button_text"
+                    android:backgroundTint="@color/button_background"
+                    android:gravity="center"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:minHeight="120dp"
+                    app:cornerRadius="12dp" />
+
+                <!-- 隐藏按钮：保留给其他机型使用，不显示 -->
+                <Button
+                    android:id="@+id/btn_menu"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:visibility="gone" />
+
+                <Button
+                    android:id="@+id/btn_remote_view"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:visibility="gone" />
+            </LinearLayout>
         </LinearLayout>
 
-        <!-- 录制状态显示（右上角） -->
-        <TextView
-            android:id="@+id/tv_recording_stats"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="top|end"
-            android:layout_marginTop="15dp"
-            android:layout_marginEnd="16dp"
-            android:background="@drawable/camera_label_background"
-            android:paddingStart="12dp"
-            android:paddingEnd="12dp"
-            android:paddingTop="6dp"
-            android:paddingBottom="6dp"
-            android:text="00:00 / 1"
-            android:textColor="#FFFFFF"
-            android:textSize="18sp"
-            android:visibility="gone" />
 
-        <!-- Fragment container for playback -->
         <FrameLayout
             android:id="@+id/fragment_container"
             android:layout_width="match_parent"

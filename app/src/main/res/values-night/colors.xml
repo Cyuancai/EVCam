@@ -9,6 +9,8 @@
     <color name="card_background">#FF060809</color>
     <color name="text_primary">#FFFFFFFF</color>
     <color name="text_secondary">#FF888888</color>
+    <color name="text_hint">#FF666666</color>
+    <color name="input_background">#FF2A3038</color>
     <color name="nav_header_background">#FF20272E</color>
 
     <!-- 导航菜单配色 - 夜间模式（与主界面一致） -->
@@ -35,6 +37,13 @@
 
     <!-- 多选模式选中背景 - 夜间模式 -->
     <color name="item_selected_background">#40FFFFFF</color>
+
+    <!-- 视频预览区配色 - 夜间模式（使用页面底色） -->
+    <color name="preview_background">@color/page_background</color>
+    <color name="preview_frame_background">#FF1A1A1A</color>
+    <color name="preview_grid_divider">@color/page_background</color>
+    <color name="preview_placeholder_text">#FF666666</color>
+    <color name="preview_controls_background">@color/page_background</color>
 
     <!-- 使用提示对话框配色 - 夜间模式 -->
     <color name="dialog_guide_background">#2A2A2A</color>

@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.os.Bundle;
 
 import com.kooo.evcam.dingtalk.DingTalkConfig;
+import com.kooo.evcam.telegram.TelegramConfig;
 
 /**
  * 透明启动 Activity
@@ -44,21 +45,47 @@ public class TransparentBootActivity extends Activity {
         AppLog.d(TAG, "开始初始化后台服务...");
         
         // 1. 启动前台服务保持进程活跃
+        // 【重要】远程服务（钉钉/Telegram）现在在 CameraForegroundService.onCreate() 中启动
+        // 不再需要 MainActivity 来启动远程服务
         CameraForegroundService.start(this, 
             "开机自启动", 
             "应用已在后台运行");
-        AppLog.d(TAG, "前台服务已启动");
+        AppLog.d(TAG, "前台服务已启动（远程服务将在其中启动）");
         
         // 2. 启动 WorkManager 保活任务（车机必需，始终开启）
         KeepAliveManager.startKeepAliveWork(this);
         AppLog.d(TAG, "WorkManager 保活任务已启动");
         
-        // 3. 检查是否需要启动远程查看服务
+        // 3. 检查是否需要启动 MainActivity
+        // 【优化后】只有以下情况需要启动 MainActivity：
+        // - 用户启用了"启动自动录制"功能（需要摄像头，必须启动 Activity）
+        // 【不再需要启动 MainActivity】：
+        // - 远程服务（钉钉/Telegram）已在 CameraForegroundService 中启动
+        // - 悬浮窗已在 CameraForegroundService 中启动
+        AppConfig appConfig = new AppConfig(this);
+        
+        boolean shouldAutoRecord = appConfig.isAutoStartRecording();
+        boolean shouldShowFloatingWindow = appConfig.isFloatingWindowEnabled();
+        
+        // 仅用于日志记录
         DingTalkConfig dingTalkConfig = new DingTalkConfig(this);
-        if (dingTalkConfig.isConfigured() && dingTalkConfig.isAutoStart()) {
-            AppLog.d(TAG, "远程查看服务配置为自动启动，启动 MainActivity（后台模式）...");
+        TelegramConfig telegramConfig = new TelegramConfig(this);
+        boolean hasRemoteService = (dingTalkConfig.isConfigured() && dingTalkConfig.isAutoStart()) ||
+                                   (telegramConfig.isConfigured() && telegramConfig.isAutoStart());
+        
+        if (hasRemoteService) {
+            AppLog.d(TAG, "远程服务已在 CameraForegroundService 中启动，无需启动 MainActivity");
+        }
+        if (shouldShowFloatingWindow) {
+            AppLog.d(TAG, "悬浮窗已在 CameraForegroundService 中启动，无需启动 MainActivity");
+        }
+        
+        // 只有自动录制需要启动 MainActivity（因为需要摄像头）
+        if (shouldAutoRecord) {
+            AppLog.d(TAG, "启动自动录制功能已启用，需要启动 MainActivity（摄像头需要 Activity）");
+            AppLog.d(TAG, "启动 MainActivity（后台模式）...");
             
-            // 启动 MainActivity 初始化远程查看服务（后台模式）
+            // 启动 MainActivity 初始化摄像头（后台模式）
             Intent mainIntent = new Intent(this, MainActivity.class);
             mainIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
             mainIntent.putExtra("auto_start_from_boot", true);
@@ -67,7 +94,7 @@ public class TransparentBootActivity extends Activity {
             
             AppLog.d(TAG, "MainActivity 已启动（后台模式）");
         } else {
-            AppLog.d(TAG, "远程查看服务未配置或未启用自动启动，仅保持后台运行");
+            AppLog.d(TAG, "无需启动 MainActivity（自动录制未启用），仅保持后台运行");
         }
     }
     
